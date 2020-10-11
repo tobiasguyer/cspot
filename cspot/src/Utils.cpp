@@ -11,6 +11,7 @@ std::vector<uint8_t> blockRead(int fd, size_t readSize)
 	{
 		if ((n = recv(fd, &buf[idx], readSize - idx, 0)) <= 0)
 		{
+            printf("READ: Empty bois %d\n", n);
 			return buf;
 		}
 		idx += n;
@@ -55,6 +56,7 @@ ssize_t blockWrite(int fd, std::vector<uint8_t> data)
 	{
 		if ((n = send(fd, &data[idx], data.size() - idx < 64 ? data.size() - idx : 64, 0)) <= 0)
 		{
+            printf("SEND: Empty bois %d\n", n);
 			return data.size();
 		}
 		idx += n;
