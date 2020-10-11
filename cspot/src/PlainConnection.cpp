@@ -10,9 +10,9 @@ void PlainConnection::connectToAp(std::string apAddress)
     std::string hostname = apAddress.substr(0, apAddress.find(":"));
     std::string portStr = apAddress.substr(apAddress.find(":") + 1, apAddress.size());
     memset(&h, 0, sizeof(h));
-    h.ai_family = AF_INET;
+    h.ai_family = PF_UNSPEC;
     h.ai_socktype = SOCK_STREAM;
-    h.ai_protocol = IPPROTO_IP;
+    h.ai_protocol = IPPROTO_TCP;
 
     // Lookup host
     if (getaddrinfo(hostname.c_str(), portStr.c_str(), &h, &airoot))
@@ -35,12 +35,12 @@ void PlainConnection::connectToAp(std::string apAddress)
                     (struct sockaddr *)ai->ai_addr,
                     ai->ai_addrlen) != -1)
         {
-            int flag = 1;
-            setsockopt(this->apSock,  /* socket affected */
-                       IPPROTO_TCP,   /* set option at TCP level */
-                       TCP_NODELAY,   /* name of option */
-                       (char *)&flag, /* the cast is historical cruft */
-                       sizeof(int));  /* length of option value */
+            // int flag = 1;
+            // setsockopt(this->apSock,  /* socket affected */
+            //            IPPROTO_TCP,   /* set option at TCP level */
+            //            TCP_NODELAY,   /* name of option */
+            //            (char *)&flag, /* the cast is historical cruft */
+            //            sizeof(int));  /* length of option value */
             break;
         }
 

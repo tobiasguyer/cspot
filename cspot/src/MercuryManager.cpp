@@ -15,6 +15,7 @@ MercuryManager::MercuryManager(std::shared_ptr<ShannonConnection> conn)
     this->conn = conn;
     this->sequenceId = 0x00000001;
     this->audioChunkManager = std::make_unique<AudioChunkManager>();
+    this->audioChunkManager->startTask();
     this->audioChunkSequence = 0;
     this->audioKeySequence = 0;
     this->queue = std::vector<std::unique_ptr<Packet>>();

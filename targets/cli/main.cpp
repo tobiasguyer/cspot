@@ -9,6 +9,8 @@
 #include <iostream>
 #include <inttypes.h>
 #include <fstream>
+#include <portaudio.h>
+
 #include <ApResolve.h>
 #include "ZeroconfAuthenticator.h"
 #include "SpotifyTrack.h"
