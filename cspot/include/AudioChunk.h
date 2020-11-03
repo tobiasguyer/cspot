@@ -19,7 +19,7 @@ private:
     std::vector<uint8_t> getIVSum(uint32_t num);
 
 public:
-    std::unique_ptr<Crypto> crypto;
+    std::shared_ptr<Crypto> crypto;
     std::vector<uint8_t> decryptedData;
     std::vector<uint8_t> audioKey;
     bool keepInMemory = false;
@@ -51,7 +51,7 @@ public:
      * @param startPosition Start position of current chunk in audio file
      * @param predictedEndPosition Predicted end position of given chunk. This is not final positon.
      */
-    AudioChunk(uint16_t seqId, std::vector<uint8_t> &audioKey, uint32_t startPosition, uint32_t predictedEndPosition);
+    AudioChunk(uint16_t seqId, std::vector<uint8_t> &audioKey, uint32_t startPosition, uint32_t predictedEndPosition, std::shared_ptr<Crypto> crypto);
     ~AudioChunk();
 
     /**

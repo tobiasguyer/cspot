@@ -13,7 +13,7 @@
 #include "AudioChunk.h"
 
 #define SPOTIFY_HEADER_SIZE 167
-#define BUFFER_SIZE 0x20000 * 1.5
+#define BUFFER_SIZE 0x20000 * 1
 typedef std::function<void(std::vector<uint8_t>&)> pcmDataCallback;
 
 enum class Whence

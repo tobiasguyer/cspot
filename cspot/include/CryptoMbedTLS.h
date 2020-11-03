@@ -36,6 +36,7 @@ static unsigned char DHGenerator[1] = {2};
 class CryptoMbedTLS {
 private:
     mbedtls_md_context_t sha1Context;
+    mbedtls_aes_context ctx;
 public:
     CryptoMbedTLS();
     ~CryptoMbedTLS();

@@ -25,7 +25,7 @@
 
 #include <ApResolve.h>
 #include <inttypes.h>
-#include <AC101AudioSink.h>
+#include <GenericI2SSink.h>
 #include "freertos/task.h"
 #include "freertos/ringbuf.h"
 
@@ -50,7 +50,7 @@ static void cspotTask(void *pvParameters)
         // @TODO Actually store this token somewhere
         auto mercuryManager = std::make_shared<MercuryManager>(std::move(session));
         mercuryManager->startTask();
-        auto audioSink = std::make_shared<AC101AudioSink>();
+        auto audioSink = std::make_shared<GenericI2SSink>();
         auto spircController = std::make_shared<SpircController>(mercuryManager, blob->username, audioSink);
         mercuryManager->reconnectedCallback = [spircController]() {
             return spircController->subscribe();
@@ -75,5 +75,5 @@ void app_main(void)
 
     ESP_LOGI("TAG", "Connected to AP, start spotify receiver");
     // for(;;);
-    auto taskHandle = xTaskCreatePinnedToCore(&cspotTask, "cspot", 8192 * 8, NULL, 5, NULL, 0);
+    auto taskHandle = xTaskCreatePinnedToCore(&cspotTask, "cspot", 4096 * 15, NULL, 5, NULL, 0);
 }

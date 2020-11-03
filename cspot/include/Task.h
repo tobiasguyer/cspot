@@ -15,14 +15,17 @@ class Task
 public:
    Task() {}
    virtual ~Task() {}
+   int stackSize = 1024;
+   char* threadName;
 
    bool startTask()
    {
 #ifdef ESP_PLATFORM
       esp_pthread_cfg_t cfg = esp_pthread_get_default_config();
-      cfg.stack_size = (8 * 1024);
-      cfg.inherit_cfg = true;
+      cfg.stack_size = stackSize;
+      cfg.inherit_cfg = false;
       cfg.pin_to_core = 1;
+      cfg.thread_name = threadName;
       esp_pthread_set_cfg(&cfg);
 #endif
       return (pthread_create(&_thread, NULL, taskEntryFunc, this) == 0);

@@ -2,10 +2,12 @@
 
 CryptoMbedTLS::CryptoMbedTLS()
 {
+    mbedtls_aes_init(&ctx);
 }
 
 CryptoMbedTLS::~CryptoMbedTLS()
 {
+    mbedtls_aes_free(&ctx);
 }
 
 std::vector<uint8_t> CryptoMbedTLS::base64Decode(const std::string &data)
@@ -87,9 +89,6 @@ std::vector<uint8_t> CryptoMbedTLS::sha1HMAC(const std::vector<uint8_t> &inputKe
 // AES CTR
 void CryptoMbedTLS::aesCTRXcrypt(const std::vector<uint8_t> &key, std::vector<uint8_t> &iv, std::vector<uint8_t> &data)
 {
-    mbedtls_aes_context ctx;
-    mbedtls_aes_init(&ctx);
-
     // needed for internal cache
     size_t off = 0;
     unsigned char streamBlock[16] = {0};
@@ -105,7 +104,6 @@ void CryptoMbedTLS::aesCTRXcrypt(const std::vector<uint8_t> &key, std::vector<ui
                           streamBlock,
                           data.data(),
                           data.data());
-    mbedtls_aes_free(&ctx);
 }
 
 void CryptoMbedTLS::aesECBdecrypt(const std::vector<uint8_t> &key, std::vector<uint8_t> &data)

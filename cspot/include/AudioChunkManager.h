@@ -7,12 +7,14 @@
 #include "AudioChunk.h"
 #include "Queue.h"
 #include "Task.h"
+#include "Crypto.h"
 
 #define DATA_SIZE_HEADER 24
 #define DATA_SIZE_FOOTER 2
 
 class AudioChunkManager : public Task {
     std::vector<std::shared_ptr<AudioChunk>> chunks;
+    std::shared_ptr<Crypto> crypto;
     Queue<std::pair<std::vector<uint8_t>, bool>> audioChunkDataQueue;
     void runTask();
 public:

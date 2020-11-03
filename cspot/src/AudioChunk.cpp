@@ -2,9 +2,9 @@
 
 std::vector<uint8_t> audioAESIV({0x72, 0xe0, 0x67, 0xfb, 0xdd, 0xcb, 0xcf, 0x77, 0xeb, 0xe8, 0xbc, 0x64, 0x3f, 0x63, 0x0d, 0x93});
 
-AudioChunk::AudioChunk(uint16_t seqId, std::vector<uint8_t> &audioKey, uint32_t startPosition, uint32_t predictedEndPosition)
+AudioChunk::AudioChunk(uint16_t seqId, std::vector<uint8_t> &audioKey, uint32_t startPosition, uint32_t predictedEndPosition, std::shared_ptr<Crypto> crypto)
 {
-    this->crypto = std::make_unique<Crypto>();
+    this->crypto = crypto;
     this->seqId = seqId;
     this->audioKey = audioKey;
     this->startPosition = startPosition;

@@ -1,8 +1,12 @@
 #include "AudioChunkManager.h"
-// #include "esp_system.h"
+#include "esp_system.h"
 
 AudioChunkManager::AudioChunkManager()
 {
+    threadName = "AudioChunkManager";
+    stackSize = 10 * 1024;
+
+    this->crypto = std::make_shared<Crypto>();
     this->chunks = std::vector<std::shared_ptr<AudioChunk>>();
     startTask();
     //this->audioChunkDataQueue = new Queue<std::pair<std::vector<uint8_t>, bool>>;
@@ -10,7 +14,7 @@ AudioChunkManager::AudioChunkManager()
 
 std::shared_ptr<AudioChunk> AudioChunkManager::registerNewChunk(uint16_t seqId, std::vector<uint8_t> &audioKey, uint32_t startPos, uint32_t endPos)
 {
-    auto chunk = std::make_shared<AudioChunk>(seqId, audioKey, startPos * 4, endPos * 4);
+    auto chunk = std::make_shared<AudioChunk>(seqId, audioKey, startPos * 4, endPos * 4, crypto);
     this->chunks.push_back(chunk);
     printf("Chunk requested %d\n", seqId);
 
@@ -88,6 +92,7 @@ void AudioChunkManager::runTask()
                             chunk->endPosition = chunk->headerFileSize;
                         }
                         printf("ID: %d: Starting decrypt!\n", seqId);
+                        printf("OI %d\n", esp_get_free_heap_size());
                         chunk->decrypt();
                         chunk->isLoadedSemaphore->give();
                         break;
@@ -95,7 +100,7 @@ void AudioChunkManager::runTask()
                     default:
                         // printf("ID: %d: Got data chunk!\n", seqId);
                         // 2 first bytes are size so we skip it
-                        // printf("(_)--- Free memory %d\n", esp_get_free_heap_size());
+                        printf("(_)--- Free memory %d\n", esp_get_free_heap_size());
                         auto actualData = std::vector<uint8_t>(data.begin() + 2, data.end());
                         chunk->appendData(actualData);
                         break;

@@ -10,6 +10,8 @@ std::map<MercuryType, std::string> MercuryTypeMap({
 
 MercuryManager::MercuryManager(std::unique_ptr<Session> session)
 {
+    threadName = "MercuryManager";
+    stackSize = 8 * 1024;
     this->timeProvider = std::make_shared<TimeProvider>();
     this->callbacks = std::map<uint64_t, mercuryCallback>();
     this->subscriptions = std::map<std::string, mercuryCallback>();

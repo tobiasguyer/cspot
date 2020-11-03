@@ -4,6 +4,8 @@
 
 Player::Player(std::shared_ptr<MercuryManager> manager, std::shared_ptr<AudioSink> audioSink)
 {
+    threadName = "Player";
+    stackSize = 6 * 1024;
     this->audioSink = audioSink;
     this->manager = manager;
     startTask();

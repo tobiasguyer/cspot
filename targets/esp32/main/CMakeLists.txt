@@ -1,6 +1,7 @@
 set(COMPONENT_SRCS
     "main.cpp"
     "sinks/AC101AudioSink.cpp"
+    "sinks/GenericI2SSink.cpp"
     "sinks/ES9018AudioSink.cpp"
     "sinks/ac101.c"
 )
