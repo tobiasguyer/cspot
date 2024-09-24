@@ -880,6 +880,10 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
         sendCommand(CommandType::SKIP_PREV);
 
       } else if (command->at("endpoint") == "seek_to") {
+        
+#ifdef CONFIG_BELL_NOCODEC
+        needsToBeSkipped = false;
+#endif
         if (command->at("relative") == "beginning") {  //relative
           this->device.player_state.has_position_as_of_timestamp = true;
           this->device.player_state.position_as_of_timestamp =

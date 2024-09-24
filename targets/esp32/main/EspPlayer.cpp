@@ -152,7 +152,7 @@ void EspPlayer::runTask() {
             tracks.at(0)->trackMetrics->endTrack();
             this->handler->ctx->playbackMetrics->sendEvent(tracks[0]);
           }
-          lastHash = chunk->trackHash;
+          lastHash = current_hash;
           tracks.at(0)->trackMetrics->startTrackPlaying(
               tracks.at(0)->requestedPosition);
           this->handler->putPlayerState();
