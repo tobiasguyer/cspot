@@ -252,7 +252,7 @@ DeviceStateHandler::DeviceStateHandler(std::shared_ptr<cspot::Context> ctx) {
       0,  //supports_lossless_audio
       true,
       1,  //supports_set_options_command
-      true, {false, 0, false, 0, true, 1}};
+      true,  {false, 0, false, 0, true, 1}};
   device.device_info.capabilities.supported_types =
       (char**)calloc(5, sizeof(char*));
   device.device_info.capabilities.supported_types[0] = strdup("audio/track");
