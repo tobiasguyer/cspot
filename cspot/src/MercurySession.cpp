@@ -51,12 +51,14 @@ void MercurySession::runTask() {
       }
     } catch (const std::runtime_error& e) {
       CSPOT_LOG(error, "Error while receiving packet: %s", e.what());
+      connection_lost = true;
       failAllPending();
 
       if (!isRunning)
         return;
 
       reconnect();
+      connection_lost = false;
       continue;
     }
   }
@@ -138,7 +140,8 @@ std::string MercurySession::getCountryCode() {
 
 void MercurySession::handlePacket() {
   Packet packet = {};
-
+  if (connection_lost)
+    return;
   this->packetQueue.wtpop(packet, 200);
 
   if (executeEstabilishedCallback && this->connectionReadyCallback != nullptr) {
@@ -188,6 +191,7 @@ void MercurySession::handlePacket() {
               this->callbacks.erase(this->callbacks.find(response.second));
             }
           }
+          pb_release(Header_fields, &partial->second.mercuryHeader);
           this->partials.erase(partial);
         }
       }
@@ -202,9 +206,13 @@ void MercurySession::handlePacket() {
           partial++;  // if(partial.first == sequenceId)
         if (partial != partials.end()) {
           auto uri = std::string(partial->second.mercuryHeader.uri);
-          if (this->subscriptions.count(uri) > 0) {
-            this->subscriptions[uri](partial->second);
-          }
+          for (auto& it : this->subscriptions)
+            if (uri.find(it.first) != std::string::npos) {
+              it.second(partial->second);
+              goto found_subscription;
+            }
+        found_subscription:;
+          pb_release(Header_fields, &partial->second.mercuryHeader);
           this->partials.erase(partial);
         }
       }
@@ -274,7 +282,7 @@ std::pair<int, int64_t> MercurySession::decodeResponse(
       break;
     auto partSize = ntohs(extract<uint16_t>(data, pos));
     pos += 2;
-    if (!partial->second.mercuryHeader.has_uri) {
+    if (partial->second.mercuryHeader.uri == NULL) {
       partial->second.fail = false;
       auto headerBytes = std::vector<uint8_t>(data.begin() + pos,
                                               data.begin() + pos + partSize);
@@ -293,6 +301,11 @@ std::pair<int, int64_t> MercurySession::decodeResponse(
   return std::make_pair(flag, sequenceId);
 }
 
+void MercurySession::addSubscriptionListener(const std::string& uri,
+                                             ResponseCallback subscription) {
+  this->subscriptions.insert({uri, subscription});
+}
+
 uint64_t MercurySession::executeSubscription(RequestType method,
                                              const std::string& uri,
                                              ResponseCallback callback,
@@ -302,15 +315,14 @@ uint64_t MercurySession::executeSubscription(RequestType method,
             RequestTypeMap[method].c_str());
 
   // Encode header
-  pbPutString(uri, tempMercuryHeader.uri);
-  pbPutString(RequestTypeMap[method], tempMercuryHeader.method);
-
-  tempMercuryHeader.has_method = true;
-  tempMercuryHeader.has_uri = true;
+  pb_release(Header_fields, &tempMercuryHeader);
+  tempMercuryHeader.uri = strdup(uri.c_str());
+  tempMercuryHeader.method = strdup(RequestTypeMap[method].c_str());
 
   // GET and SEND are actually the same. Therefore the override
   // The difference between them is only in header's method
-  if (method == RequestType::GET) {
+  if (method == RequestType::GET || method == RequestType::POST ||
+      method == RequestType::PUT) {
     method = RequestType::SEND;
   }
 
@@ -319,8 +331,10 @@ uint64_t MercurySession::executeSubscription(RequestType method,
   }
 
   auto headerBytes = pbEncode(Header_fields, &tempMercuryHeader);
+  pb_release(Header_fields, &tempMercuryHeader);
 
-  this->callbacks.insert({sequenceId, callback});
+  if (callback != nullptr)
+    this->callbacks.insert({sequenceId, callback});
 
   // Structure: [Sequence size] [SequenceId] [0x1] [Payloads number]
   // [Header size] [Header] [Payloads (size + data)]

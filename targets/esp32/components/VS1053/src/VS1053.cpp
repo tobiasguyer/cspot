@@ -118,17 +118,18 @@ esp_err_t VS1053_SINK::init(spi_host_device_t SPI,
   write_mem(PAR_CONFIG1, PAR_CONFIG1_AAC_SBR_SELECTIVE_UPSAMPLE);
   write_register(SCI_VOL, 0x0c0c);
 #ifndef CONFIG_VS1053_NO_PLUGIN
-  //load_user_code(PLUGIN, PLUGIN_SIZE);
+  load_user_code(PLUGIN, PLUGIN_SIZE);
 #endif
   vTaskDelay(100 / portTICK_PERIOD_MS);
-  xTaskCreatePinnedToCore(vs_feed, "track_feed", 4098, (void*)this, 10,
-                          &task_handle, 0);
+  xTaskCreate(vs_feed, "track_feed", 1028 * 20, (void*)this, 1, &task_handle);
+  //xTaskCreatePinnedToCore(vs_feed, "track_feed", 1028 * 20, (void*)this, 1, &task_handle, 1);
   return ESP_OK;
 }
 
 VS1053_SINK::~VS1053_SINK() {
   if (task_handle != NULL)
     vTaskDelete(task_handle);
+  command_callbacks.clear();
   task_handle = NULL;
   isRunning = false;
 }
@@ -208,12 +209,14 @@ size_t VS1053_SINK::get_track_info(size_t pos, uint8_t& endFillByte,
     byteRate *= 4;
 
   ESP_LOGI(TAG,
+           "Track %i, "
            "%dKiB "
            "%1ds %1.1f"
            "kb/s %dHz %s %s",
-           pos / (1024 / VS1053_PACKET_SIZE), read_register(SCI_DECODE_TIME),
-           byteRate * (8.0 / 1000.0), sampleRate & 0xFFFE,
-           (sampleRate & 1) ? "stereo" : "mono", afName[audioFormat]);
+           tracks[0]->track_id, pos / (1024 / VS1053_PACKET_SIZE),
+           read_register(SCI_DECODE_TIME), byteRate * (8.0 / 1000.0),
+           sampleRate & 0xFFFE, (sampleRate & 1) ? "stereo" : "mono",
+           afName[audioFormat]);
 #endif
   return (audioFormat == afMidi || audioFormat == afUnknown)
              ? REPORT_INTERVAL_MIDI
@@ -222,7 +225,8 @@ size_t VS1053_SINK::get_track_info(size_t pos, uint8_t& endFillByte,
 
 size_t VS1053_TRACK::feed_data(uint8_t* data, size_t len,
                                bool STORAGE_VOLATILE) {
-  if (!len || xStreamBufferSpacesAvailable(this->dataBuffer) < len)
+  if (this->dataBuffer == NULL || !len ||
+      xStreamBufferSpacesAvailable(this->dataBuffer) < len)
     return 0;
   if (STORAGE_VOLATILE)
     if (this->header_size)
@@ -245,6 +249,7 @@ void VS1053_TRACK::empty_feed() {
 void VS1053_SINK::new_state(VS1053_TRACK::VS_TRACK_STATE& state,
                             VS1053_TRACK::VS_TRACK_STATE new_state) {
   state = new_state;
+  ESP_LOGI(TAG, "New state %i", new_state);
   if (state_callback != NULL) {
     state_callback((uint8_t)new_state);
   }
@@ -313,7 +318,8 @@ void VS1053_SINK::run_feed(size_t FILL_BUFFER_BEFORE_PLAYBACK) {
           nextReportPos += this->get_track_info(pos, endFillByte, endFillBytes);
         }
       }
-      vStreamBufferDelete(track->dataBuffer);
+      if (track->dataBuffer != NULL)
+        vStreamBufferDelete(track->dataBuffer);
       track->dataBuffer = NULL;
       tracks.pop_front();
     }
@@ -324,16 +330,16 @@ void VS1053_SINK::run_feed(size_t FILL_BUFFER_BEFORE_PLAYBACK) {
 }
 // FEED FUNCTIONS
 
-size_t VS1053_SINK::data_request() {
+size_t VS1053_SINK::data_request(std::shared_ptr<VS1053_TRACK> track) {
   return xStreamBufferSpacesAvailable(track->dataBuffer);
 }
 
 void VS1053_SINK::stop_feed() {
-  if (this->tracks[0]->state < 3)
+  if (this->tracks[0]->state <= 4)
     new_state(this->tracks[0]->state, VS1053_TRACK::VS_TRACK_STATE::tsCancel);
 }
 void VS1053_SINK::soft_stop_feed() {
-  if (this->tracks[0]->state < 3)
+  if (this->tracks[0]->state <= 3)
     new_state(this->tracks[0]->state,
               VS1053_TRACK::VS_TRACK_STATE::tsSoftCancel);
 }

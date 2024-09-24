@@ -8,7 +8,7 @@
 
 #include "TrackPlayer.h"  // for TrackPlayer
 
-VSPlayer::VSPlayer(std::shared_ptr<cspot::SpircHandler> handler,
+VSPlayer::VSPlayer(std::shared_ptr<cspot::DeviceStateHandler> handler,
                    std::shared_ptr<VS1053_SINK> vsSink) {
   this->handler = handler;
   this->vsSink = vsSink;
@@ -16,7 +16,7 @@ VSPlayer::VSPlayer(std::shared_ptr<cspot::SpircHandler> handler,
     this->state_callback(state);
   };
 
-  this->handler->getTrackPlayer()->setDataCallback(
+  this->handler->trackPlayer->setDataCallback(
       [this](uint8_t* data, size_t bytes, size_t trackId,
              bool STORAGE_VOLATILE) {
         if (!this->track) {
@@ -37,41 +37,49 @@ VSPlayer::VSPlayer(std::shared_ptr<cspot::SpircHandler> handler,
 
   this->isPaused = false;
 
-  this->handler->setEventHandler(
-      [this](std::unique_ptr<cspot::SpircHandler::Event> event) {
-        switch (event->eventType) {
-          case cspot::SpircHandler::EventType::PLAY_PAUSE:
-            if (std::get<bool>(event->data)) {
-              if (this->track)
-                this->vsSink->new_state(this->vsSink->tracks[0]->state,
-                                        VS1053_TRACK::tsPlaybackPaused);
-            } else {
-              if (this->track)
-                this->vsSink->new_state(this->vsSink->tracks[0]->state,
-                                        VS1053_TRACK::tsPlaybackSeekable);
-            }
+  this->handler->stateCallback =
+      [this](cspot::DeviceStateHandler::Command event) {
+        switch (event.commandType) {
+          case cspot::DeviceStateHandler::CommandType::PAUSE:
+            if (this->track)
+              this->vsSink->new_state(this->vsSink->tracks[0]->state,
+                                      VS1053_TRACK::tsPlaybackPaused);
             break;
-          case cspot::SpircHandler::EventType::DISC:
+          case cspot::DeviceStateHandler::CommandType::PLAY:
+            if (this->track)
+              this->vsSink->new_state(this->vsSink->tracks[0]->state,
+                                      VS1053_TRACK::tsPlaybackSeekable);
+            break;
+          case cspot::DeviceStateHandler::CommandType::DISC:
             this->track = nullptr;
             this->vsSink->delete_all_tracks();
             this->vsSink->stop_feed();
+            //this->currentTrack = nullptr;
+            this->futureTrack = nullptr;
             break;
-          case cspot::SpircHandler::EventType::FLUSH:
+          case cspot::DeviceStateHandler::CommandType::FLUSH:
             this->track->empty_feed();
             break;
-          case cspot::SpircHandler::EventType::SEEK:
+          //case cspot::DeviceStateHandler::CommandType::SEEK:
+          //break;
+          case cspot::DeviceStateHandler::CommandType::PLAYBACK_START:
             break;
-          case cspot::SpircHandler::EventType::PLAYBACK_START:
+          case cspot::DeviceStateHandler::CommandType::PLAYBACK:
             this->isPaused = true;
             this->playlistEnd = false;
+            if (this->currentTrack != nullptr)
+              this->futureTrack =
+                  std::get<std::shared_ptr<cspot::QueuedTrack>>(event.data);
+            else
+              this->currentTrack =
+                  std::get<std::shared_ptr<cspot::QueuedTrack>>(event.data);
             break;
-          case cspot::SpircHandler::EventType::DEPLETED:
-            this->playlistEnd = true;
-            this->track = nullptr;
+          case cspot::DeviceStateHandler::CommandType::DEPLETED:
+            this->futureTrack = nullptr;
             this->vsSink->stop_feed();
             break;
-          case cspot::SpircHandler::EventType::VOLUME: {
-            this->volume = std::get<int>(event->data);
+          case cspot::DeviceStateHandler::CommandType::VOLUME: {
+            this->volume = std::get<int32_t>(event.data);
             this->vsSink->feed_command([this](uint8_t) {
               this->vsSink->set_volume_logarithmic(this->volume);
             });
@@ -80,18 +88,25 @@ VSPlayer::VSPlayer(std::shared_ptr<cspot::SpircHandler> handler,
           default:
             break;
         }
-      });
+      };
 }
 
 void VSPlayer::state_callback(uint8_t state) {
   if (state == 1) {
-    this->handler->notifyAudioReachedPlayback();
+    currentTrack->trackMetrics->startTrackPlaying(
+        currentTrack->requestedPosition);
+    this->handler->putPlayerState();
   }
   if (state == 7) {
-    if (this->playlistEnd)
-      this->handler->notifyAudioEnded();
-    else
-      this->handler->notifyAudioReachedPlaybackEnd();
+    currentTrack->trackMetrics->endTrack();
+    this->handler->ctx->playbackMetrics->sendEvent(currentTrack);
+    if (futureTrack != nullptr) {
+      currentTrack = futureTrack;
+      futureTrack = nullptr;
+    } else {
+      currentTrack = nullptr;
+      this->track = nullptr;
+    }
   }
 }
 
