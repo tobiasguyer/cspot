@@ -47,11 +47,12 @@ class TrackMetrics {
 
   void newPosition(uint64_t pos);
   void endInterval(uint64_t pos);
+  void pauseInterval(uint64_t pos, bool pause);
   void endTrack();
   void startTrack();
   void startTrackDecoding();
   void startTrackPlaying(uint64_t pos);
-  uint64_t getPosition();
+  uint64_t getPosition(bool paused = false);
 
  private:
   std::shared_ptr<cspot::Context> ctx;

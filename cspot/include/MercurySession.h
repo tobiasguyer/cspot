@@ -39,7 +39,9 @@ class MercurySession : public bell::Task, public cspot::Session {
     UNSUB = 0xb4,
     SUBRES = 0xb5,
     SEND = 0xb2,
-    GET = 0xFF,  // Shitty workaround, it's value is actually same as SEND
+    GET = 0xFF,   // Shitty workaround, it's value is actually same as SEND
+    POST = 0xb6,  //??
+    PUT = 0xb7,   //??
     PING = 0x04,
     PONG_ACK = 0x4a,
     AUDIO_CHUNK_REQUEST_COMMAND = 0x08,
@@ -57,13 +59,15 @@ class MercurySession : public bell::Task, public cspot::Session {
   };
 
   std::unordered_map<RequestType, std::string> RequestTypeMap = {
-      {RequestType::GET, "GET"},
-      {RequestType::SEND, "SEND"},
-      {RequestType::SUB, "SUB"},
-      {RequestType::UNSUB, "UNSUB"},
+      {RequestType::GET, "GET"},   {RequestType::SEND, "SEND"},
+      {RequestType::SUB, "SUB"},   {RequestType::UNSUB, "UNSUB"},
+      {RequestType::POST, "POST"}, {RequestType::PUT, "PUT"},
   };
 
   void handlePacket();
+
+  void addSubscriptionListener(const std::string& uri,
+                               ResponseCallback subscription);
 
   uint64_t executeSubscription(RequestType type, const std::string& uri,
                                ResponseCallback callback,
@@ -129,6 +133,7 @@ class MercurySession : public bell::Task, public cspot::Session {
   std::atomic<bool> isRunning = false;
   std::atomic<bool> isReconnecting = false;
   std::atomic<bool> executeEstabilishedCallback = false;
+  std::atomic<bool> connection_lost = false;
 
   void failAllPending();
 

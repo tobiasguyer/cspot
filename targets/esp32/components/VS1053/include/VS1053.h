@@ -150,7 +150,7 @@ class VS1053_SINK {
      * get available Space in dataBuffer
      * @return free space available in dataBuffer
      */
-  size_t data_request();
+  size_t data_request(std::shared_ptr<VS1053_TRACK> track);
   /**
      * loads Usercode(PATCH)
      * @param plugin uint8_t * to plugin array
@@ -185,6 +185,10 @@ class VS1053_SINK {
     afDsd64,
     afLatm
   } audioFormat = afUnknown;
+
+  std::deque<command_callback> command_callbacks;
+  std::deque<std::shared_ptr<VS1053_TRACK>> tracks;
+
   void get_audio_format(Audio_Format* audioFormat, size_t* endFillBytes);
   void control_mode_on();
   void control_mode_off();
@@ -199,8 +203,9 @@ class VS1053_SINK {
   void write_mem32(uint16_t addr, uint32_t data);
   bool sdi_send_buffer(uint8_t* data, size_t len);
   void remove_track(std::shared_ptr<VS1053_TRACK> track) {
-    if (this->track->track_id == track->track_id)
-      this->track = nullptr;
+    for (int i = 0; i < tracks.size(); i++)
+      if (tracks[i]->track_id == track->track_id)
+        tracks.erase(tracks.begin() + i);
   };
   void start_track(std::shared_ptr<VS1053_TRACK>, size_t);
   size_t track_seekable(size_t);
@@ -212,11 +217,7 @@ class VS1053_SINK {
 
   void delete_all_tracks(void);
   size_t spaces_available(size_t);
-  std::shared_ptr<VS1053_TRACK> track = nullptr;
-  std::shared_ptr<VS1053_TRACK> future_track = nullptr;
   size_t command_pointer = 0, command_reader = 0;
-  std::deque<command_callback> command_callbacks;
-  std::deque<std::shared_ptr<VS1053_TRACK>> tracks;
   bool isRunning = false;
 
  private:

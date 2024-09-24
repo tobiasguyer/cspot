@@ -23,7 +23,6 @@
 
 #include <CSpotContext.h>
 #include <LoginBlob.h>
-#include <SpircHandler.h>
 
 #include <inttypes.h>
 #include "BellTask.h"
@@ -135,7 +134,7 @@ class ZeroconfAuthenticator {
 
 class CSpotTask : public bell::Task {
  private:
-  std::unique_ptr<cspot::SpircHandler> handler;
+  //std::unique_ptr<cspot::DeviceStateHandler> handler;
 #ifndef CONFIG_BELL_NOCODEC
   std::unique_ptr<AudioSink> audioSink;
 #endif
@@ -204,8 +203,8 @@ class CSpotTask : public bell::Task {
     if (ctx->config.authData.size() > 0) {
       // when credentials file is set, then store reusable credentials
 
-      // Start spirc task
-      auto handler = std::make_shared<cspot::SpircHandler>(ctx);
+      // Start device handler task
+      auto handler = std::make_shared<cspot::DeviceStateHandler>(ctx);
 
       // Start handling mercury messages
       ctx->session->startTask();
@@ -246,7 +245,7 @@ void init_spiffs() {
       ESP_LOGE("SPIFFS", "Failed to find SPIFFS partition");
     } else {
       ESP_LOGE("SPIFFS", "Failed to initialize SPIFFS (%s)",
-                esp_err_to_name(ret));
+               esp_err_to_name(ret));
     }
     return;
   }
@@ -255,7 +254,7 @@ void init_spiffs() {
   ret = esp_spiffs_info(conf.partition_label, &total, &used);
   if (ret != ESP_OK) {
     ESP_LOGE("SPIFFS", "Failed to get SPIFFS partition information (%s)",
-              esp_err_to_name(ret));
+             esp_err_to_name(ret));
   } else {
     ESP_LOGE("SPIFFS", "Partition size: total: %d, used: %d", total, used);
   }
@@ -284,7 +283,6 @@ void app_main(void) {
 
   // statusLed->setStatus(StatusLed::WIFI_CONNECTED);
 
-  
   ESP_LOGI("MAIN", "Connected to AP, start spotify receiver");
   //auto taskHandle = xTaskCreatePinnedToCore(&cspotTask, "cspot", 12*1024, NULL, 5, NULL, 1);
   /*auto taskHandle = */

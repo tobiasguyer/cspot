@@ -8,6 +8,7 @@
 #include "BellLogger.h"  // for AbstractLogger
 #include "BellUtils.h"   // for BELL_SLEEP_MS
 #include "CSpotContext.h"
+#include "EventManager.h"
 #include "Logger.h"            // for CSPOT_LOG
 #include "Packet.h"            // for cspot
 #include "TrackQueue.h"        // for CDNTrackStream, CDNTrackStream::TrackInfo
@@ -57,7 +58,7 @@ static long vorbisTellCb(TrackPlayer* self) {
 TrackPlayer::TrackPlayer(std::shared_ptr<cspot::Context> ctx,
                          std::shared_ptr<cspot::TrackQueue> trackQueue,
                          EOFCallback eof, TrackLoadedCallback trackLoaded)
-    : bell::Task("cspot_player", 48 * 1024, 5, 1) {
+    : bell::Task("cspot_player", 56 * 1024, 5, 1) {
   this->ctx = ctx;
   this->eofCallback = eof;
   this->trackLoaded = trackLoaded;
@@ -134,8 +135,9 @@ void TrackPlayer::runTask() {
   while (isRunning) {
     bool properStream = true;
     // Ensure we even have any tracks to play
-    if (!this->trackQueue->hasTracks() ||
-        (!pendingReset && endOfQueueReached && trackQueue->isFinished())) {
+    if (!this->trackQueue->preloadedTracks.size() ||
+        (!pendingReset && endOfQueueReached &&
+         this->trackQueue->preloadedTracks.size() == 1)) {
       this->trackQueue->playableSemaphore->twait(300);
       continue;
     }
@@ -170,7 +172,6 @@ void TrackPlayer::runTask() {
     }
 
     track = newTrack;
-    track->trackMetrics = std::make_shared<TrackMetrics>(this->ctx);
     this->ctx->playbackMetrics->trackMetrics = track->trackMetrics;
 
     inFuture = trackOffset > 0;
@@ -184,8 +185,6 @@ void TrackPlayer::runTask() {
         continue;
       }
     }
-
-    CSPOT_LOG(info, "Got track ID=%s", track->identifier.c_str());
 
     currentSongPlaying = true;
 
@@ -205,10 +204,8 @@ void TrackPlayer::runTask() {
       track->trackMetrics->startTrackDecoding();
       track->trackMetrics->track_size = currentTrackStream->getSize();
 
-      if (trackOffset == 0 && pendingSeekPositionMs == 0) {
-        this->trackLoaded(track, startPaused);
-        startPaused = false;
-      }
+      this->trackLoaded(track, true);
+      startPaused = false;
 
 #ifndef CONFIG_BELL_NOCODEC
       int32_t r =
@@ -221,6 +218,8 @@ void TrackPlayer::runTask() {
                                                          pcmBuffer.size());
         size_t written = 0;
         size_t toWrite = ret;
+        if (!ret)
+          continue;
         while (toWrite) {
           written = dataCallback(pcmBuffer.data() + (ret - toWrite), toWrite,
                                  tracksPlayed, 0);
@@ -261,35 +260,27 @@ void TrackPlayer::runTask() {
 
       eof = false;
       track->loading = true;
-      //in case of a repeatedtrack, set requested position to 0
-      track->trackMetrics->startTrackPlaying(track->requestedPosition);
-      this->trackQueue->playbackState->updatePositionMs(
-          track->requestedPosition);
-      this->trackQueue->notifyCallback();
-      track->requestedPosition = 0;
 
       CSPOT_LOG(info, "Playing");
 
       while (!eof && currentSongPlaying) {
         // Execute seek if needed
         if (pendingSeekPositionMs > 0) {
-          uint32_t seekPosition = pendingSeekPositionMs;
+          track->requestedPosition = pendingSeekPositionMs;
 
           // Seek to the new position
 #ifndef CONFIG_BELL_NOCODEC
-          VORBIS_SEEK(&vorbisFile, seekPosition);
+          VORBIS_SEEK(&vorbisFile, track->requestedPosition);
 #else
-          seekPosition = seekPosition * duration_lambda + start_offset;
+          uint32_t seekPosition =
+              track->requestedPosition * duration_lambda + start_offset;
           currentTrackStream->seek(seekPosition);
-          track->trackMetrics->newPosition(pendingSeekPositionMs);
           skipped = true;
 #endif
-          this->trackQueue->playbackState->updatePositionMs(
-              pendingSeekPositionMs);
-          this->trackQueue->notifyCallback();
-
+          track->trackMetrics->newPosition(pendingSeekPositionMs);
           // Reset the pending seek position
           pendingSeekPositionMs = 0;
+          this->trackLoaded(track, false);
         }
 
         long ret =
@@ -358,10 +349,12 @@ void TrackPlayer::runTask() {
     }
 
     if (eof) {
-      if (trackQueue->isFinished()) {
+      if (this->trackQueue->preloadedTracks.size() <= 1) {
         endOfQueueReached = true;
       }
+#ifdef CONFIG_BELL_NOCODEC
       this->eofCallback(properStream);
+#endif
     }
   }
 }

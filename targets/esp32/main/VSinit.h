@@ -87,27 +87,28 @@ void initAudioSink(std::shared_ptr<VS1053_SINK> VS1053) {
                  "Make sure SD card lines have pull-up resistors in place.",
                  esp_err_to_name(ret));
       }
+    } else {
+      struct dirent* entry;
+      struct stat file_stat;
+      DIR* dir = opendir(MOUNT_POINT);
+      char n_name[280];
+      if (!dir)
+        printf("no dir\n");
+      while ((entry = readdir(dir)) != NULL) {
+        sprintf(n_name, "%s/%s", MOUNT_POINT, entry->d_name);
+        printf("%s\n", n_name);
+        printf("name:%s, ino: %i\n", entry->d_name, entry->d_ino);
+        printf("stat_return_value:%i\n", stat(n_name, &file_stat));
+        printf("stat_mode:%i\n", file_stat.st_mode);
+      }
+      dir = opendir(MOUNT_POINT "/TRACKS");
+      if (!dir)
+        printf("no dir\n");
+      while ((entry = readdir(dir)) != NULL) {
+        printf("%s\n", entry->d_name);
+      }
+      closedir(dir);
     }
-    struct dirent* entry;
-    struct stat file_stat;
-    DIR* dir = opendir(MOUNT_POINT);
-    char n_name[280];
-    if (!dir)
-      printf("no dir\n");
-    while ((entry = readdir(dir)) != NULL) {
-      sprintf(n_name, "%s/%s", MOUNT_POINT, entry->d_name);
-      printf("%s\n", n_name);
-      printf("name:%s, ino: %i\n", entry->d_name, entry->d_ino);
-      printf("stat_return_value:%i\n", stat(n_name, &file_stat));
-      printf("stat_mode:%i\n", file_stat.st_mode);
-    }
-    dir = opendir(MOUNT_POINT "/TRACKS");
-    if (!dir)
-      printf("no dir\n");
-    while ((entry = readdir(dir)) != NULL) {
-      printf("%s\n", entry->d_name);
-    }
-    closedir(dir);
   }
   VS1053->write_register(SCI_VOL, 10 | 10 << 8);
 }

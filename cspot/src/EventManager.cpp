@@ -36,10 +36,37 @@ void TrackMetrics::endInterval(uint64_t pos) {
       addInterval(intervals, {currentInterval->position, currentInterval->end});
 }
 
-uint64_t TrackMetrics::getPosition() {
-  return (
-      currentInterval->position +
-      (this->ctx->timeProvider->getSyncedTimestamp() - currentInterval->start));
+void TrackMetrics::pauseInterval(uint64_t pos, bool pause) {
+  // end Interval
+  if (pause) {
+    currentInterval->length =
+        this->ctx->timeProvider->getSyncedTimestamp() - currentInterval->start;
+    currentInterval->end = currentInterval->position + currentInterval->length;
+    totalAmountPlayed += currentInterval->length;
+    // add skipped time
+    if (pos != 0) {
+      if (pos > currentInterval->position + currentInterval->length)
+        skipped_forward.add(
+            pos - (currentInterval->position + currentInterval->length));
+      else
+        skipped_backward.add(
+            (currentInterval->position + currentInterval->length) - pos);
+    }
+    if (currentInterval->length > longestInterval)
+      longestInterval = currentInterval->length;
+    intervals = addInterval(intervals,
+                            {currentInterval->position, currentInterval->end});
+  } else {
+    currentInterval = std::make_shared<TrackInterval>(
+        this->ctx->timeProvider->getSyncedTimestamp(), pos);
+  }
+}
+
+uint64_t TrackMetrics::getPosition(bool paused) {
+  return (currentInterval->position +
+          (paused ? currentInterval->length
+                  : (this->ctx->timeProvider->getSyncedTimestamp() -
+                     currentInterval->start)));
 }
 
 void TrackMetrics::startTrack() {
@@ -197,7 +224,7 @@ std::vector<uint8_t> PlaybackMetrics::sendEvent(
          std::to_string(track->trackMetrics
                             ->timestamp));  // unix timestamp when track started
   append(&msg, "0");                        //?? usually 0
-  append(&msg, track->ref.context == "radio" ? "autoplay" : "context");
+  append(&msg, track->ref.provider);
   append(
       &msg,
       (end_source == "playlist" || end_source == "your_library")
@@ -225,11 +252,15 @@ std::vector<uint8_t> PlaybackMetrics::sendEvent(
   append(&msg, "");
   append(&msg, "5003900000000146");
   append(&msg, "");
+  for (int i = 0; i < track->ref.full_metadata_count; i++)
+    if (strcmp(track->ref.metadata[i].key, "decision_id") == 0) {
+      append(&msg, track->ref.metadata[i].value);
+      goto appended_decision_id;
+    }
   append(
       &msg,
-      track->ref.context == "radio"
-          ? correlation_id
-          : "");  //ssp~061a6236e23e1a9847bd9b6ad4cd942eac8d //allways the same , only when radio? / autoplay
+      "");  // decision_id ssp~061a6236e23e1a9847bd9b6ad4cd942eac8d //allways the same , only when radio? / autoplay
+appended_decision_id:;
   append(&msg, "");
   append(&msg, "0");  //?? usually 0
   append(&msg, "0");  //?? usually 0
@@ -246,7 +277,7 @@ std::vector<uint8_t> PlaybackMetrics::sendEvent(
 
   auto parts = MercurySession::DataParts({msg});
   // Execute the request
-  ctx->session->execute(MercurySession::RequestType::SEND, requestUrl,
+  ctx->session->execute(MercurySession::RequestType::POST, requestUrl,
                         responseLambda, parts);
 #endif
   return msg;
