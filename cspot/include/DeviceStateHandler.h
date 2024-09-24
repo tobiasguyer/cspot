@@ -104,7 +104,7 @@ class DeviceStateHandler {
       free(string);
     string = NULL;
   }
-  
+
   static void reloadTrackList(void*);
 };
 }  // namespace cspot
