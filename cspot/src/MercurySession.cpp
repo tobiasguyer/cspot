@@ -176,7 +176,6 @@ void MercurySession::handlePacket() {
     case RequestType::SUB:
     case RequestType::UNSUB: {
       CSPOT_LOG(debug, "Received mercury packet");
-
       auto response = this->decodeResponse(packet.data);
       if (!response.fail) {
         if (response.sequenceId >= 0) {
@@ -191,7 +190,6 @@ void MercurySession::handlePacket() {
     }
     case RequestType::SUBRES: {
       auto response = decodeResponse(packet.data);
-
       if (!response.fail) {
         std::string uri(response.mercuryHeader.uri);
         for (auto& it : this->subscriptions) {
@@ -290,6 +288,11 @@ MercurySession::Response MercurySession::decodeResponse(
     resp.fail = false;
   }
   return resp;
+}
+
+void MercurySession::addSubscriptionListener(const std::string& uri,
+                                             ResponseCallback subscription) {
+  this->subscriptions.insert({uri, subscription});
 }
 
 void MercurySession::addSubscriptionListener(const std::string& uri,
