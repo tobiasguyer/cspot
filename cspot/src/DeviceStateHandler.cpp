@@ -142,7 +142,7 @@ DeviceStateHandler::DeviceStateHandler(std::shared_ptr<cspot::Context> ctx) {
 
   this->ctx->session->addSubscriptionListener("hm://connect-state/",
                                               connectStateSubscription);
-  CSPOT_LOG(info, "Added connect-state subscrription");
+  CSPOT_LOG(info, "Added connect-state subscription");
 
   // the device connection status gets reported trough "hm://social-connect",if active
   auto socialConnectSubscription = [this](MercurySession::Response& res) {
@@ -880,6 +880,9 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
         sendCommand(CommandType::SKIP_PREV);
 
       } else if (command->at("endpoint") == "seek_to") {
+#ifndef CONFIG_BELL_NOCODEC
+        needsToBeSkipped = false;
+#endif
         if (command->at("relative") == "beginning") {  //relative
           this->device.player_state.has_position_as_of_timestamp = true;
           this->device.player_state.position_as_of_timestamp =
@@ -924,6 +927,13 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
               std::make_shared<cspot::QueuedTrack>(
                   currentTracks[offset + queuedOffset], this->ctx, 0));
         }
+#ifndef CONFIG_BELL_NOCODEC
+        this->trackPlayer->seekMs(
+            trackQueue->preloadedTracks[0]->trackMetrics->getPosition());
+        sendCommand(
+            CommandType::SEEK,
+            (int32_t)this->device.player_state.position_as_of_timestamp);
+#endif
         this->putPlayerState();
       } else if (command->at("endpoint") == "set_queue") {
         std::scoped_lock lock(trackQueue->tracksMutex);
@@ -986,6 +996,13 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
                                   1],
                     this->ctx, 0));
         }
+#ifndef CONFIG_BELL_NOCODEC
+        this->trackPlayer->seekMs(
+            trackQueue->preloadedTracks[0]->trackMetrics->getPosition());
+        sendCommand(
+            CommandType::SEEK,
+            (int32_t)this->device.player_state.position_as_of_timestamp);
+#endif
         this->putPlayerState();
       } else if (command->at("endpoint") == "update_context") {
         unreference(this->device.player_state.session_id);
@@ -1086,6 +1103,13 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
                                   ? 2
                                   : this->device.player_state.options
                                         .shuffling_context));
+#ifndef CONFIG_BELL_NOCODEC
+        this->trackPlayer->seekMs(
+            trackQueue->preloadedTracks[0]->trackMetrics->getPosition());
+        sendCommand(
+            CommandType::SEEK,
+            (int32_t)this->device.player_state.position_as_of_timestamp);
+#endif
       } else if (command->at("endpoint") == "set_options") {
 
         if (this->device.player_state.options.repeating_context !=

@@ -9,7 +9,7 @@
 #include "pb_decode.h"
 #include "protobuf/connect.pb.h"
 
-#define TRACK_SEND_LIMIT 10
+#define TRACK_SEND_LIMIT 25
 
 namespace cspot {
 struct TrackReference {
