@@ -295,11 +295,6 @@ void MercurySession::addSubscriptionListener(const std::string& uri,
   this->subscriptions.insert({uri, subscription});
 }
 
-void MercurySession::addSubscriptionListener(const std::string& uri,
-                                             ResponseCallback subscription) {
-  this->subscriptions.insert({uri, subscription});
-}
-
 uint64_t MercurySession::executeSubscription(RequestType method,
                                              const std::string& uri,
                                              ResponseCallback callback,
