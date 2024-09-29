@@ -140,7 +140,7 @@ class CSpotTask : public bell::Task {
 #endif
 
  public:
-  CSpotTask() : bell::Task("cspot", 8 * 1024, 0, 0) {
+  CSpotTask() : bell::Task("cspot", 32 * 1024, 0, 0) {
     startTask();
   }
   void runTask() {

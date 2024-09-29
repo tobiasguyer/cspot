@@ -140,10 +140,10 @@ void CliPlayer::runTask() {
       } else {
         if (lastHash != chunk->trackHash) {
           if (lastHash) {
-            this->handler->trackPlayer->eofCallback(true);
-            tracks.pop_front();
             tracks.at(0)->trackMetrics->endTrack();
             this->handler->ctx->playbackMetrics->sendEvent(tracks[0]);
+            tracks.pop_front();
+            this->handler->trackPlayer->eofCallback(true);
           }
           lastHash = chunk->trackHash;
           tracks.at(0)->trackMetrics->startTrackPlaying(

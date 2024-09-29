@@ -147,10 +147,10 @@ void EspPlayer::runTask() {
       } else {
         if (lastHash != current_hash) {
           if (lastHash) {
-            this->handler->trackPlayer->eofCallback(true);
-            tracks.pop_front();
             tracks.at(0)->trackMetrics->endTrack();
             this->handler->ctx->playbackMetrics->sendEvent(tracks[0]);
+            tracks.pop_front();
+            this->handler->trackPlayer->eofCallback(true);
           }
           lastHash = current_hash;
           tracks.at(0)->trackMetrics->startTrackPlaying(

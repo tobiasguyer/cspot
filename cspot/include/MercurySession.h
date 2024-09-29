@@ -27,7 +27,8 @@ class MercurySession : public bell::Task, public cspot::Session {
   struct Response {
     Header mercuryHeader;
     DataParts parts;
-    bool fail;
+    int64_t sequenceId;
+    bool fail = true;
   };
   typedef std::function<void(Response&)> ResponseCallback;
   typedef std::function<void(bool, const std::vector<uint8_t>&)>
@@ -118,7 +119,7 @@ class MercurySession : public bell::Task, public cspot::Session {
   void reconnect();
 
   std::unordered_map<int64_t, ResponseCallback> callbacks;
-  std::deque<std::pair<int64_t, Response>> partials;
+  std::deque<Response> partials;
   std::unordered_map<std::string, ResponseCallback> subscriptions;
   std::unordered_map<uint32_t, AudioKeyCallback> audioKeyCallbacks;
 
@@ -137,6 +138,6 @@ class MercurySession : public bell::Task, public cspot::Session {
 
   void failAllPending();
 
-  std::pair<int, int64_t> decodeResponse(const std::vector<uint8_t>& data);
+  MercurySession::Response decodeResponse(const std::vector<uint8_t>& data);
 };
 }  // namespace cspot
