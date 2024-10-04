@@ -128,7 +128,7 @@ void PlayerContext::createIndexBasedOnTracklist(
     bool shuffle, uint8_t page) {
   //create new index
   alternative_index.clear();
-  std::vector<int64_t> shuffle_index;
+  std::vector<uint32_t> shuffle_index;
   bool smart_shuffle =
       (json_tracks.at(0).find("metadata") == json_tracks.at(0).end() ||
        json_tracks.at(0).find("metadata")->find("shuffle.distribution") ==
@@ -148,7 +148,7 @@ void PlayerContext::createIndexBasedOnTracklist(
     }
   }
   if (smart_shuffle)
-    alternative_index = std::vector<int64_t>(json_tracks.size());
+    alternative_index = std::vector<uint32_t>(json_tracks.size());
   for (int i = 0; i < json_tracks.size(); i++) {
     if (smart_shuffle) {
       alternative_index[distributionToIndex(json_tracks.at(i)
@@ -186,7 +186,7 @@ uint8_t PlayerContext::jsonToTracklist(
     std::vector<ProvidedTrack>* tracks,
     std::vector<std::pair<std::string, std::string>> metadata_map,
     nlohmann::json::value_type& json_tracks, const char* provider,
-    int64_t offset, uint8_t page, bool shuffle, bool preloadedTrack) {
+    uint32_t offset, uint8_t page, bool shuffle, bool preloadedTrack) {
   if (offset >= json_tracks.size())
     return 0;
   bool radio = (strcmp("autoplay", provider) == 0) ? true : false;
@@ -274,15 +274,14 @@ uint8_t PlayerContext::jsonToTracklist(
   }
   return copiedTracks;
 }
+
 void PlayerContext::resolveTracklist(
     std::vector<std::pair<std::string, std::string>> metadata_map,
-    void (*responseFunction)(void*), bool changed_state) {
-  //if last track was no radio track, resolve tracklist
-  //CSPOT_LOG()
-  CSPOT_LOG(debug, "Resolve tracklist");
+    void (*responseFunction)(void*), bool changed_state,
+    bool trackIsPartOfContext) {
   if (changed_state) {
     for (int i = 0; i < tracks->size(); i++) {
-      if (strstr(tracks->at(i).uri, "spotify:delimiter")) {
+      if (tracks->at(i).uri && strstr(tracks->at(i).uri, "spotify:delimiter")) {
         uint8_t release_offset = 0;
         while (i + release_offset < tracks->size()) {
           cspot::TrackReference::pbReleaseProvidedTrack(
@@ -294,16 +293,21 @@ void PlayerContext::resolveTracklist(
       }
     }
   }
+
+  //if last track was no radio track, resolve tracklist
   if ((playerState->track.provider == NULL ||
        strcmp(playerState->track.provider, "autoplay")) != 0 &&
       playerState->context_uri != NULL) {
-    std::string requestUrl = string_format(
-        "hm://context-resolve/v1/%s",
-        (playerState->options.shuffling_context && playerState->context_url)
-            ? &playerState->context_url[10]
-            : playerState->context_uri);
-    auto responseHandler = [this, metadata_map, responseFunction,
-                            changed_state](MercurySession::Response& res) {
+    std::string requestUrl = "hm://context-resolve/v1/%s";
+    if (playerState->options.shuffling_context && playerState->context_url)
+      requestUrl = string_format(requestUrl, &playerState->context_url[10]);
+    else
+      requestUrl = string_format(requestUrl, playerState->context_uri);
+    CSPOT_LOG(debug, "Resolve tracklist, url: %s", &requestUrl[0]);
+
+    auto responseHandler = [this, metadata_map, responseFunction, changed_state,
+                            trackIsPartOfContext](
+                               MercurySession::Response& res) {
       if (res.fail || !res.parts.size())
         return;
       if (!res.parts[0].size())
@@ -353,12 +357,12 @@ void PlayerContext::resolveTracklist(
               goto looking_for_playlisttrack;
             }
         }
+
         if (trackref == tracks->begin() &&
             strcmp(trackref->uri, "spotify:delimiter") == 0)
           return;
         //if track available were all smart_shuffle_tracks, load Tracklist from 0;
         if (trackref == tracks->begin()) {
-
           for (int i = 0;
                i < (trackref->full_metadata_count > trackref->metadata_count
                         ? trackref->full_metadata_count
@@ -375,7 +379,7 @@ void PlayerContext::resolveTracklist(
 
         //look for trackreference
         for (int i = 0; i < jsonResult["pages"].size(); i++) {
-          int64_t offset = 0;
+          uint32_t offset = 0;
           if (!copy_tracks) {
             for (auto track : jsonResult["pages"][i]["tracks"]) {
               if (strcmp(track["uri"].get<std::string>().c_str(),
@@ -473,6 +477,12 @@ void PlayerContext::resolveTracklist(
 
             tracks->insert(tracks->begin(), new_track);
           }
+        } else if (trackIsPartOfContext) {
+          jsonToTracklist(tracks, metadata_map,
+                          jsonResult["pages"][0]["tracks"], "context",
+                          tracks->at(0).original_index + 1, 0,
+                          playerState->options.shuffling_context, false);
+
         } else
           return resolveRadio(metadata_map, responseFunction);
       }

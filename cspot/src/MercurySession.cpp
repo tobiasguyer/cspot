@@ -216,13 +216,7 @@ void MercurySession::failAllPending() {
     it.second(response);
   }
 
-  // Fail all subscriptions
-  for (auto& it : this->subscriptions) {
-    it.second(response);
-  }
-
   // Remove references
-  this->subscriptions = {};
   this->callbacks = {};
 }
 

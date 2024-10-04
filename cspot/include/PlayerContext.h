@@ -32,12 +32,13 @@ struct PlayerContext {
 
   void resolveTracklist(
       std::vector<std::pair<std::string, std::string>> metadata_map,
-      void (*responseFunction)(void*), bool state_changed = false);
+      void (*responseFunction)(void*), bool state_changed = false,
+      bool trackIsPartOfContext = false);
   uint8_t jsonToTracklist(
       std::vector<ProvidedTrack>* tracks,
       std::vector<std::pair<std::string, std::string>> metadata_map,
       nlohmann::json::value_type& json_tracks, const char* provider,
-      int64_t offset = 0, uint8_t page = 0, bool shuffle = false,
+      uint32_t offset = 0, uint8_t page = 0, bool shuffle = false,
       bool preloadedTrack = false);
   void createIndexBasedOnTracklist(std::vector<ProvidedTrack>* tracks,
                                    nlohmann::json::value_type& json_tracks,
@@ -51,7 +52,7 @@ struct PlayerContext {
   PlayerState* playerState;
   std::vector<ProvidedTrack>* tracks;
   uint8_t* index;
-  std::vector<int64_t> alternative_index;
+  std::vector<uint32_t> alternative_index;
   char* next_page_url = NULL;
   std::string context_uri;
   ~PlayerContext() {

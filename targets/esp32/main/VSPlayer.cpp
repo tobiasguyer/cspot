@@ -75,6 +75,7 @@ VSPlayer::VSPlayer(std::shared_ptr<cspot::DeviceStateHandler> handler,
                   std::get<std::shared_ptr<cspot::QueuedTrack>>(event.data);
             break;
           case cspot::DeviceStateHandler::CommandType::DEPLETED:
+            this->track = nullptr;
             this->futureTrack = nullptr;
             this->vsSink->stop_feed();
             break;

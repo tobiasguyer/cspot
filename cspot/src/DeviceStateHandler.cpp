@@ -26,6 +26,19 @@ using namespace cspot;
 static DeviceStateHandler* handler;
 
 void DeviceStateHandler::reloadTrackList(void*) {
+
+  if (!handler->offset) {
+    if (handler->trackQueue->preloadedTracks.size())
+      handler->trackQueue->preloadedTracks.clear();
+    handler->trackQueue->preloadedTracks.push_back(
+        std::make_shared<cspot::QueuedTrack>(
+            handler->currentTracks[handler->offset], handler->ctx,
+            handler->offsetFromStartInMillis));
+    handler->device.player_state.track =
+        handler->currentTracks[handler->offset];
+    handler->offsetFromStartInMillis = 0;
+    handler->offset++;
+  }
   if (strcmp(handler->currentTracks[handler->offset - 1].uri,
              "spotify:delimiter") == 0 &&
       handler->device.player_state.is_playing) {
@@ -111,6 +124,8 @@ DeviceStateHandler::DeviceStateHandler(std::shared_ptr<cspot::Context> ctx) {
           this->ctx->timeProvider->getSyncedTimestamp();
       //putPlayerState();
       sendCommand(CommandType::PLAYBACK, trackQueue->preloadedTracks[0]);
+      if ((uint32_t)currentTracks.size() / 2 == offset)
+        playerContext->resolveTracklist(metadata_map, reloadTrackList);
     } else
       putPlayerState();
   };
@@ -714,11 +729,15 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
           if (options->find("player_options_override") != options->end())
             device.player_state.options.shuffling_context =
                 options->at("player_options_override").at("shuffling_context");
+          else
+            device.player_state.options.shuffling_context = false;
           if (options->find("skip_to") != options->end()) {
             if (options->at("skip_to").size()) {
               if (options->at("skip_to").find("track_index") !=
-                  options->at("skip_to").end())
+                  options->at("skip_to").end()) {
                 playlist_offset = options->at("skip_to").at("track_index");
+                track.original_index = playlist_offset;
+              }
               track.uri = PlayerContext::createStringReferenceIfFound(
                   options->at("skip_to"), "track_uri");
               track.uid = PlayerContext::createStringReferenceIfFound(
@@ -771,6 +790,24 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
           }
           this->device.player_state.context_metadata_count =
               context_metadata_map.size();
+        } else {
+          if (this->device.player_state.options.context_enhancement_count) {
+            for (auto& enhamcement :
+                 this->device.player_state.options.context_enhancement) {
+              this->unreference(enhamcement.key);
+              this->unreference(enhamcement.value);
+            }
+            this->device.player_state.options.context_enhancement_count = 0;
+          }
+          context_metadata_map.clear();
+          for (int i = this->device.player_state.context_metadata_count - 1;
+               i >= 0; i--) {
+            unreference(this->device.player_state.context_metadata[i].key);
+            unreference(this->device.player_state.context_metadata[i].value);
+          }
+          free(this->device.player_state.context_metadata);
+          this->device.player_state.context_metadata = NULL;
+          this->device.player_state.context_metadata_count = 0;
         }
 
         unreference(this->device.player_state.context_uri);
@@ -825,10 +862,12 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
         track.full_metadata_count = metadata_offset;
         track.metadata_count = metadata_offset;
         track.provider = strdup("context");
-        currentTracks.insert(currentTracks.begin(), track);
-        device.player_state.track = track;
+        if (track.uri) {
+          currentTracks.insert(currentTracks.begin(), track);
+          device.player_state.track = track;
+        }
         offset = 1;
-        playerContext->resolveTracklist(context_metadata_map, reloadTrackList,
+        playerContext->resolveTracklist(metadata_map, reloadTrackList, true,
                                         true);
       } else if (command->at("endpoint") == "pause") {
         device.player_state.is_paused = true;
