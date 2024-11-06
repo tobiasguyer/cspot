@@ -21,6 +21,7 @@ class VSPlayer {
   size_t volume = 0;
 
  private:
+  size_t trackId = 0;
   std::string currentTrackId;
   std::shared_ptr<VS1053_SINK> vsSink;
   std::shared_ptr<cspot::DeviceStateHandler> handler;

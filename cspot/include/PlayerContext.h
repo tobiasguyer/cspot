@@ -16,7 +16,7 @@
 #include "nlohmann/json_fwd.hpp"  // for json
 
 #include "protobuf/metadata.pb.h"  // for Track, _Track, AudioFile, Episode
-#define MAX_TRACKS 80
+#define MAX_TRACKS 100
 namespace cspot {
 struct PlayerContext {
   PlayerContext(std::shared_ptr<cspot::Context> ctx, PlayerState* playerState,
@@ -26,9 +26,12 @@ struct PlayerContext {
     this->tracks = tracks;
     this->index = index;
   }
-  void resolveRadio(
+  void autoplayQuery(
       std::vector<std::pair<std::string, std::string>> metadata_map,
       void (*responseFunction)(void*), bool secondTry = false);
+  void resolveRadio(
+      std::vector<std::pair<std::string, std::string>> metadata_map,
+      void (*responseFunction)(void*), char*);
 
   void resolveTracklist(
       std::vector<std::pair<std::string, std::string>> metadata_map,

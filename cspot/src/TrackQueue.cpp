@@ -123,18 +123,21 @@ void TrackInfo::loadPbEpisode(Episode* pbEpisode,
   duration = pbEpisode->duration;
 }
 
-QueuedTrack::QueuedTrack(ProvidedTrack& ref,
-                         std::shared_ptr<cspot::Context> ctx,
-                         int64_t requestedPosition)
+QueuedTrack::QueuedTrack(
+    ProvidedTrack& ref, std::shared_ptr<cspot::Context> ctx,
+    std::shared_ptr<bell::WrappedSemaphore> playableSemaphore,
+    int64_t requestedPosition)
     : requestedPosition((uint32_t)requestedPosition), ctx(ctx) {
   trackMetrics = std::make_shared<TrackMetrics>(ctx, requestedPosition);
   loadedSemaphore = std::make_shared<bell::WrappedSemaphore>();
+  this->playableSemaphore = playableSemaphore;
   this->ref = ref;
-  if (ref.uid == NULL || !strstr(ref.uri, "spotify:delimiter")) {
+  if (!strstr(ref.uri, "spotify:delimiter")) {
     this->gid = base62Decode(ref.uri);
     state = State::QUEUED;
   } else {
     state = State::FAILED;
+    playableSemaphore->give();
     loadedSemaphore->give();
   }
 }
@@ -142,6 +145,7 @@ QueuedTrack::QueuedTrack(ProvidedTrack& ref,
 QueuedTrack::~QueuedTrack() {
   state = State::FAILED;
   loadedSemaphore->give();
+  //playableSemaphore->give();
 
   if (pendingMercuryRequest != 0) {
     ctx->session->unregister(pendingMercuryRequest);
@@ -167,7 +171,7 @@ void QueuedTrack::stepParseMetadata(Track* pbTrack, Episode* pbEpisode) {
   bool canPlay = false;
   AudioFile* selectedFiles = nullptr;
 
-  const char* countryCode = ctx->config.countryCode.c_str();
+  const char* countryCode = ctx->session->getCountryCode().c_str();
 
   if (gid.first == SpotifyFileType::TRACK) {
     CSPOT_LOG(info, "Track name: %s", pbTrack->name);
@@ -244,10 +248,10 @@ void QueuedTrack::stepParseMetadata(Track* pbTrack, Episode* pbEpisode) {
     // no alternatives for song
     state = State::FAILED;
     loadedSemaphore->give();
+    playableSemaphore->give();
     return;
   }
   identifier = bytesToHexString(fileId);
-
   state = State::KEY_REQUIRED;
 }
 
@@ -270,7 +274,7 @@ void QueuedTrack::stepLoadAudioFile(
         } else {
           CSPOT_LOG(error, "Failed to get audio key");
           state = State::FAILED;
-          loadedSemaphore->give();
+          playableSemaphore->give();
         }
         updateSemaphore->give();
       });
@@ -318,12 +322,14 @@ void QueuedTrack::stepLoadCDNUrl(const std::string& accessKey) {
     state = State::FAILED;
     loadedSemaphore->give();
   }
+  playableSemaphore->give();
 }
 
 void QueuedTrack::expire() {
-  if (state != State::QUEUED) {
+  if (state != State::QUEUED && state != State::FAILED) {
     state = State::FAILED;
     loadedSemaphore->give();
+    playableSemaphore->give();
   }
 }
 
@@ -337,14 +343,16 @@ void QueuedTrack::stepLoadMetadata(
                     bytesToHexString(gid.second).c_str());
 
   auto responseHandler = [this, pbTrack, pbEpisode, &trackListMutex,
-                          updateSemaphore](MercurySession::Response& res) {
+                          updateSemaphore](MercurySession::Response res) {
     std::scoped_lock lock(trackListMutex);
 
     if (res.parts.size() == 0) {
+      CSPOT_LOG(info, "Invalid Metadata");
       // Invalid metadata, cannot proceed
       state = State::FAILED;
       updateSemaphore->give();
       loadedSemaphore->give();
+      playableSemaphore->give();
       return;
     }
 
@@ -395,16 +403,14 @@ void TrackQueue::runTask() {
   std::deque<std::shared_ptr<QueuedTrack>> trackQueue;
 
   while (isRunning) {
-    processSemaphore->twait(100);
+    if (processSemaphore->twait(200)) {
+      if (!preloadedTracks.size())
+        continue;
+    }
 
     // Make sure we have the newest access key
     accessKey = accessKeyFetcher->getAccessKey();
-
-    // No tracks loaded yet
-    if (!preloadedTracks.size()) {
-      BELL_SLEEP_MS(50);
-      continue;
-    } else {
+    {
       std::scoped_lock lock(tracksMutex);
 
       trackQueue = preloadedTracks;
@@ -414,6 +420,9 @@ void TrackQueue::runTask() {
       std::scoped_lock lock(tracksMutex);
       if (track) {
         this->processTrack(track);
+        if (track->state != QueuedTrack::State::FAILED &&
+            track->state != QueuedTrack::State::READY)
+          break;
       }
     }
   }

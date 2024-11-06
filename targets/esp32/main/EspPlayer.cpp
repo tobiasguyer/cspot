@@ -26,15 +26,12 @@ EspPlayer::EspPlayer(std::unique_ptr<AudioSink> sink,
 
   this->circularBuffer = std::make_shared<bell::CircularBuffer>(1024 * 128);
 
-  this->handler->trackPlayer->setDataCallback([this](uint8_t* data,
-                                                     size_t bytes,
-#ifdef CONFIG_BELL_NOCODEC
-                                                     bool STORAGE_VOLATILE,
-#endif
-                                                     size_t trackId) {
-    this->feedData(data, bytes, trackId);
-    return bytes;
-  });
+  this->handler->trackPlayer->setDataCallback(
+      [this](uint8_t* data, size_t bytes, size_t trackId,
+             bool STORAGE_VOLATILE) {
+        this->feedData(data, bytes, trackId);
+        return bytes;
+      });
 
   this->isPaused = false;
 
@@ -150,7 +147,7 @@ void EspPlayer::runTask() {
             tracks.at(0)->trackMetrics->endTrack();
             this->handler->ctx->playbackMetrics->sendEvent(tracks[0]);
             tracks.pop_front();
-            this->handler->trackPlayer->eofCallback(true);
+            this->handler->trackPlayer->onTrackEnd(true);
           }
           lastHash = current_hash;
           tracks.at(0)->trackMetrics->startTrackPlaying(

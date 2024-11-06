@@ -1,7 +1,7 @@
 #include "VS1053.h"
 
 #include <math.h>
-#include "esp_log.h"
+#include "BellLogger.h"
 
 static const char* TAG = "VS_SINK";
 void vs_feed(void* sink) {
@@ -39,7 +39,7 @@ const char* afName[] = {
 VS1053_SINK::VS1053_SINK() {
   // PIN CONFIG
   // DREQ
-  ESP_LOGI(TAG, "VS1053_DREQ=%d", CONFIG_GPIO_VS_DREQ);
+  BELL_LOG(info, TAG, "VS1053_DREQ=%d", CONFIG_GPIO_VS_DREQ);
   isRunning = true;
   gpio_config_t gpio_conf;
   gpio_conf.mode = GPIO_MODE_INPUT;
@@ -49,17 +49,17 @@ VS1053_SINK::VS1053_SINK() {
   gpio_conf.pin_bit_mask = ((uint64_t)(((uint64_t)1) << CONFIG_GPIO_VS_DREQ));
   ESP_ERROR_CHECK(gpio_config(&gpio_conf));
   // CS
-  ESP_LOGI(TAG, "VS1053_CS=%d", CONFIG_GPIO_VS_CS);
+  BELL_LOG(info, TAG, "VS1053_CS=%d", CONFIG_GPIO_VS_CS);
   gpio_reset_pin((gpio_num_t)CONFIG_GPIO_VS_CS);
   gpio_set_direction((gpio_num_t)CONFIG_GPIO_VS_CS, GPIO_MODE_OUTPUT);
   gpio_set_level((gpio_num_t)CONFIG_GPIO_VS_CS, 1);
   // DCS
-  ESP_LOGI(TAG, "VS1053_DCS=%d", CONFIG_GPIO_VS_DCS);
+  BELL_LOG(info, TAG, "VS1053_DCS=%d", CONFIG_GPIO_VS_DCS);
   gpio_reset_pin((gpio_num_t)CONFIG_GPIO_VS_DCS);
   gpio_set_direction((gpio_num_t)CONFIG_GPIO_VS_DCS, GPIO_MODE_OUTPUT);
   gpio_set_level((gpio_num_t)CONFIG_GPIO_VS_DCS, 1);
   // RESET
-  ESP_LOGI(TAG, "VS1053_RESET=%d", CONFIG_GPIO_VS_RESET);
+  BELL_LOG(info, TAG, "VS1053_RESET=%d", CONFIG_GPIO_VS_RESET);
   if (CONFIG_GPIO_VS_RESET >= 0) {
     gpio_reset_pin((gpio_num_t)CONFIG_GPIO_VS_RESET);
     gpio_set_direction((gpio_num_t)CONFIG_GPIO_VS_RESET, GPIO_MODE_OUTPUT);
@@ -77,7 +77,7 @@ esp_err_t VS1053_SINK::init(spi_host_device_t SPI,
   uint32_t freq = spi_get_actual_clock(APB_CLK_FREQ, 1400000, 128);
   spi_device_interface_config_t devcfg;
   memset(&devcfg, 0, sizeof(spi_device_interface_config_t));
-  ESP_LOGI(TAG, "VS1053 LOWFreq: %d", freq);
+  BELL_LOG(info, TAG, "VS1053 LOWFreq: %lu", freq);
 
   devcfg.clock_speed_hz = freq, devcfg.command_bits = 8,
   devcfg.address_bits = 8, devcfg.dummy_bits = 0, devcfg.duty_cycle_pos = 0,
@@ -87,9 +87,10 @@ esp_err_t VS1053_SINK::init(spi_host_device_t SPI,
   devcfg.pre_cb = NULL,  // Specify pre-transfer callback to handle D/C line
       devcfg.post_cb = NULL;
 
-  ESP_LOGI(TAG, "spi device interface config done, VERSION : %i", VERSION);
+  BELL_LOG(info, TAG, "spi device interface config done, VERSION : %i",
+           VERSION);
   ret = spi_bus_add_device(SPI, &devcfg, &this->SPIHandleLow);
-  ESP_LOGI(TAG, "spi_bus_add_device=%d", ret);
+  BELL_LOG(info, TAG, "spi_bus_add_device=%d", ret);
   assert(ret == ESP_OK);
   // SPI TEST SLOW-/HIGH-SPEED
   vTaskDelay(20 / portTICK_PERIOD_MS);
@@ -103,11 +104,11 @@ esp_err_t VS1053_SINK::init(spi_host_device_t SPI,
         SCI_CLOCKF,
         HZ_TO_SC_FREQ(12288000) | SC_MULT_53_45X |
             SC_ADD_53_00X);  // Normal clock settings multiplyer 3.0 = 12.2 MHz
-    ESP_LOGI(TAG, "VS1053 HighFreq: %d", freq);
+    BELL_LOG(info, TAG, "VS1053 HighFreq: %lu", freq);
     devcfg.clock_speed_hz = freq, devcfg.command_bits = 0,
     devcfg.address_bits = 0, devcfg.spics_io_num = CONFIG_GPIO_VS_DCS;
     ret = spi_bus_add_device(SPI, &devcfg, &this->SPIHandleFast);
-    ESP_LOGI(TAG, "spi_bus_add_device=%d", ret);
+    BELL_LOG(info, TAG, "spi_bus_add_device=%d", ret);
     assert(ret == ESP_OK);
     ret = test_comm("Slow SPI,Testing VS1053 read/write registers...\n");
     if (ret != ESP_OK)
@@ -121,7 +122,7 @@ esp_err_t VS1053_SINK::init(spi_host_device_t SPI,
   load_user_code(PLUGIN, PLUGIN_SIZE);
 #endif
   vTaskDelay(100 / portTICK_PERIOD_MS);
-  xTaskCreate(vs_feed, "track_feed", 1028 * 20, (void*)this, 1, &task_handle);
+  xTaskCreate(vs_feed, "track_feed", 4098 * 4, (void*)this, 1, &task_handle);
   //xTaskCreatePinnedToCore(vs_feed, "track_feed", 1028 * 20, (void*)this, 1, &task_handle, 1);
   return ESP_OK;
 }
@@ -136,13 +137,20 @@ VS1053_SINK::~VS1053_SINK() {
 // LOOP
 VS1053_TRACK::VS1053_TRACK(size_t track_id, size_t buffer_size) {
   this->track_id = track_id;
-  this->dataBuffer = xStreamBufferCreate(buffer_size, 1);
+  ucBufferStorage = (uint8_t*)malloc(buffer_size);
+  this->dataBuffer = xStreamBufferCreateStatic(buffer_size, 1, ucBufferStorage,
+                                               &xStaticStreamBuffer);
   // this->run_track();
+
+  if (dataBuffer == NULL) {
+    BELL_LOG(error, TAG, "not enough heap memory\n");
+    /* There was not enough heap memory space available to create the
+        stream buffer. */
+  }
 }
 VS1053_TRACK::~VS1053_TRACK() {
-  if (dataBuffer != NULL)
-    vStreamBufferDelete(dataBuffer);
-  dataBuffer = NULL;
+  vStreamBufferDelete(dataBuffer);
+  free(ucBufferStorage);
 }
 
 void VS1053_SINK::new_track(std::shared_ptr<VS1053_TRACK> track) {
@@ -208,7 +216,7 @@ size_t VS1053_SINK::get_track_info(size_t pos, uint8_t& endFillByte,
   if (audioFormat == afFlac)
     byteRate *= 4;
 
-  ESP_LOGI(TAG,
+  BELL_LOG(info, TAG,
            "Track %i, "
            "%dKiB "
            "%1ds %1.1f"
@@ -225,14 +233,11 @@ size_t VS1053_SINK::get_track_info(size_t pos, uint8_t& endFillByte,
 
 size_t VS1053_TRACK::feed_data(uint8_t* data, size_t len,
                                bool STORAGE_VOLATILE) {
-  if (this->dataBuffer == NULL || !len ||
-      xStreamBufferSpacesAvailable(this->dataBuffer) < len)
-    return 0;
   if (STORAGE_VOLATILE)
     if (this->header_size)
       xStreamBufferReset(this->dataBuffer);
   size_t res =
-      xStreamBufferSend(this->dataBuffer, (void*)data, len, pdMS_TO_TICKS(100));
+      xStreamBufferSend(this->dataBuffer, (void*)data, len, pdMS_TO_TICKS(30));
   return res;
 }
 size_t VS1053_SINK::spaces_available(size_t track_id) {
@@ -249,15 +254,15 @@ void VS1053_TRACK::empty_feed() {
 void VS1053_SINK::new_state(VS1053_TRACK::VS_TRACK_STATE& state,
                             VS1053_TRACK::VS_TRACK_STATE new_state) {
   state = new_state;
-  ESP_LOGI(TAG, "New state %i", new_state);
+  BELL_LOG(info, TAG, "New state %i", new_state);
   if (state_callback != NULL) {
     state_callback((uint8_t)new_state);
   }
 }
 
 void VS1053_SINK::run_feed(size_t FILL_BUFFER_BEFORE_PLAYBACK) {
+  uint8_t* item = (uint8_t*)malloc(VS1053_PACKET_SIZE);
   while (isRunning) {
-    uint8_t* item = (uint8_t*)malloc(VS1053_PACKET_SIZE);
     if (tracks.size()) {
       size_t itemSize = 0;
       uint32_t pos = 0;
@@ -289,8 +294,9 @@ void VS1053_SINK::run_feed(size_t FILL_BUFFER_BEFORE_PLAYBACK) {
           case VS1053_TRACK::VS_TRACK_STATE::tsPlaybackSeekable:
 
           tsPlaybackSeekable:
-            itemSize = xStreamBufferReceive(track->dataBuffer, (void*)item,
-                                            VS1053_PACKET_SIZE, 10);
+            itemSize =
+                xStreamBufferReceive(track->dataBuffer, (void*)item,
+                                     VS1053_PACKET_SIZE, pdMS_TO_TICKS(30));
             if (itemSize) {
               this->sdi_send_buffer(item, itemSize);
               pos++;
@@ -303,7 +309,6 @@ void VS1053_SINK::run_feed(size_t FILL_BUFFER_BEFORE_PLAYBACK) {
                             VS1053_TRACK::VS_TRACK_STATE::tsCancel);
             [[fallthrough]];
           case VS1053_TRACK::VS_TRACK_STATE::tsCancel:
-            free(item);
             track->empty_feed();
             this->cancel_track(&track->state);
             [[fallthrough]];
@@ -318,9 +323,6 @@ void VS1053_SINK::run_feed(size_t FILL_BUFFER_BEFORE_PLAYBACK) {
           nextReportPos += this->get_track_info(pos, endFillByte, endFillBytes);
         }
       }
-      if (track->dataBuffer != NULL)
-        vStreamBufferDelete(track->dataBuffer);
-      track->dataBuffer = NULL;
       tracks.pop_front();
     }
     vTaskDelay(50 / portTICK_PERIOD_MS);
@@ -447,20 +449,20 @@ esp_err_t VS1053_SINK::test_comm(const char* header) {
   write_register(SCI_AICTRL2, 0x7E57);
   if (read_register(SCI_AICTRL1) != 0xABAD ||
       read_register(SCI_AICTRL2) != 0x7E57) {
-    ESP_LOGI(TAG, "There is something wrong with VS10xx SCI registers\n");
+    BELL_LOG(info, TAG, "There is something wrong with VS10xx SCI registers\n");
     return ESP_ERR_INVALID_RESPONSE;
   }
   write_register(SCI_AICTRL1, 0);
   write_register(SCI_AICTRL2, 0);
   uint16_t ssVer = ((read_register(SCI_STATUS) >> 4) & 15);
   if (chipNumber[ssVer]) {
-    ESP_LOGI(TAG, "Chip is VS%d\n", chipNumber[ssVer]);
+    BELL_LOG(info, TAG, "Chip is VS%d\n", chipNumber[ssVer]);
     if (chipNumber[ssVer] != 1053) {
-      ESP_LOGI(TAG, "Incorrect chip\n");
+      BELL_LOG(info, TAG, "Incorrect chip\n");
       return ESP_ERR_NOT_SUPPORTED;
     }
   } else {
-    ESP_LOGI(TAG, "Unknown VS10xx SCI_MODE field SS_VER = %d\n", ssVer);
+    BELL_LOG(info, TAG, "Unknown VS10xx SCI_MODE field SS_VER = %d\n", ssVer);
     return ESP_ERR_NOT_FOUND;
   }
 
@@ -471,7 +473,7 @@ esp_err_t VS1053_SINK::test_comm(const char* header) {
 
 void VS1053_SINK::load_user_code(const unsigned short* plugin,
                                  uint16_t sizeofpatch) {
-  ESP_LOGI(TAG, "Loading patch");
+  BELL_LOG(info, TAG, "Loading patch");
   await_data_request();
   int i = 0;
   while (i < sizeofpatch) {
@@ -497,7 +499,7 @@ void VS1053_SINK::load_user_code(const unsigned short* plugin,
 
 void VS1053_SINK::await_data_request() {
   while (!gpio_get_level((gpio_num_t)CONFIG_GPIO_VS_DREQ))
-    vTaskDelay(1);
+    taskYIELD();
 }
 // WRITE/READ FUNCTIONS
 
@@ -511,8 +513,8 @@ uint16_t VS1053_SINK::read_register(uint8_t _reg) {
   SPITransaction.cmd = VS_READ_COMMAND;
   SPITransaction.addr = _reg;
   if (SPI_semaphore != NULL)
-    while (xSemaphoreTake(*SPI_semaphore, 1) != pdTRUE)
-      vTaskDelay(1);
+    if (xSemaphoreTake(*SPI_semaphore, portMAX_DELAY) != pdTRUE)
+      return 0;
   ret = spi_device_transmit(this->SPIHandleLow, &SPITransaction);
   assert(ret == ESP_OK);
   uint16_t result = (((SPITransaction.rx_data[0] & 0xFF) << 8) |
@@ -536,8 +538,8 @@ bool VS1053_SINK::write_register(uint8_t _reg, uint16_t _value) {
   SPITransaction.tx_data[1] = (_value & 0xFF);
   SPITransaction.length = 16;
   if (SPI_semaphore != NULL)
-    while (xSemaphoreTake(*SPI_semaphore, 1) != pdTRUE)
-      vTaskDelay(1);
+    if (xSemaphoreTake(*SPI_semaphore, portMAX_DELAY) != pdTRUE)
+      return false;
   ret = spi_device_transmit(this->SPIHandleLow, &SPITransaction);
   assert(ret == ESP_OK);
   await_data_request();  // Wait for DREQ to be HIGH again
@@ -597,8 +599,8 @@ bool VS1053_SINK::sdi_send_buffer(uint8_t* data, size_t len) {
   spi_transaction_t SPITransaction;
   esp_err_t ret;
   if (SPI_semaphore != NULL)
-    while (xSemaphoreTake(*SPI_semaphore, 1) != pdTRUE)
-      vTaskDelay(1);
+    if (xSemaphoreTake(*SPI_semaphore, portMAX_DELAY) != pdTRUE)
+      return false;
   while (len)  // More to do?
   {
     await_data_request();  // Wait for space available
@@ -630,8 +632,8 @@ bool VS1053_SINK::sdi_send_fillers(uint8_t endFillByte, size_t len) {
   for (int i = 0; i < VS1053_CHUNK_SIZE; i++)
     data[i] = endFillByte;
   if (SPI_semaphore != NULL)
-    while (xSemaphoreTake(*SPI_semaphore, 1) != pdTRUE)
-      vTaskDelay(1);
+    if (xSemaphoreTake(*SPI_semaphore, portMAX_DELAY) != pdTRUE)
+      return false;
   while (len)  // More to do?
   {
     await_data_request();  // Wait for space available

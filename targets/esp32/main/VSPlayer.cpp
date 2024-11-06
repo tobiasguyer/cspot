@@ -1,10 +1,11 @@
 #include "VSPlayer.h"
 
-#include <cstdint>   // for uint8_t
-#include <iostream>  // for operator<<, basic_ostream, endl, cout
-#include <memory>    // for shared_ptr, make_shared, make_unique
-#include <mutex>     // for scoped_lock
-#include <variant>   // for get
+#include <BellLogger.h>  // for BELL_LOG
+#include <cstdint>       // for uint8_t
+#include <iostream>      // for operator<<, basic_ostream, endl, cout
+#include <memory>        // for shared_ptr, make_shared, make_unique
+#include <mutex>         // for scoped_lock
+#include <variant>       // for get
 
 #include "TrackPlayer.h"  // for TrackPlayer
 
@@ -22,11 +23,20 @@ VSPlayer::VSPlayer(std::shared_ptr<cspot::DeviceStateHandler> handler,
         if (!this->track) {
           this->track = std::make_shared<VS1053_TRACK>(trackId, 4098 * 16);
           this->vsSink->new_track(this->track);
+          BELL_LOG(error, "VSPlayer", "New track_id (%d)", trackId);
         }
         if (trackId != this->track->track_id) {
           this->vsSink->soft_stop_feed();
           this->track = std::make_shared<VS1053_TRACK>(trackId, 4098 * 16);
           this->vsSink->new_track(this->track);
+          BELL_LOG(error, "VSPlayer", "New track_id (%d)", trackId);
+        }
+        if (this->vsSink->tracks[0]->track_id != trackId &&
+            (this->vsSink->tracks[0]->state < VS1053_TRACK::tsSoftCancel)) {
+          this->vsSink->soft_stop_feed();
+          BELL_LOG(error, "VSPlayer",
+                   "VSSink track_id (%d) is different from VSPlayer(%d)",
+                   this->vsSink->tracks[0]->track_id, trackId);
         }
         return this->track->feed_data(data, bytes, STORAGE_VOLATILE);
       },
@@ -42,12 +52,12 @@ VSPlayer::VSPlayer(std::shared_ptr<cspot::DeviceStateHandler> handler,
         switch (event.commandType) {
           case cspot::DeviceStateHandler::CommandType::PAUSE:
             if (this->track)
-              this->vsSink->new_state(this->vsSink->tracks[0]->state,
+              this->vsSink->new_state(this->track->state,
                                       VS1053_TRACK::tsPlaybackPaused);
             break;
           case cspot::DeviceStateHandler::CommandType::PLAY:
             if (this->track)
-              this->vsSink->new_state(this->vsSink->tracks[0]->state,
+              this->vsSink->new_state(this->track->state,
                                       VS1053_TRACK::tsPlaybackSeekable);
             break;
           case cspot::DeviceStateHandler::CommandType::DISC:
@@ -63,6 +73,13 @@ VSPlayer::VSPlayer(std::shared_ptr<cspot::DeviceStateHandler> handler,
           //case cspot::DeviceStateHandler::CommandType::SEEK:
           //break;
           case cspot::DeviceStateHandler::CommandType::PLAYBACK_START:
+            if (this->track != nullptr) {
+              this->track = nullptr;
+              if (this->currentTrack != nullptr) {
+                this->vsSink->delete_all_tracks();
+                this->futureTrack = nullptr;
+              }
+            }
             break;
           case cspot::DeviceStateHandler::CommandType::PLAYBACK:
             this->isPaused = true;
@@ -84,6 +101,7 @@ VSPlayer::VSPlayer(std::shared_ptr<cspot::DeviceStateHandler> handler,
             this->vsSink->feed_command([this](uint8_t) {
               this->vsSink->set_volume_logarithmic(this->volume);
             });
+            this->handler->putDeviceState(PutStateReason_PLAYER_STATE_CHANGED);
             break;
           }
           default:

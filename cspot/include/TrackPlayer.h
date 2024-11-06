@@ -35,22 +35,16 @@ class TrackPlayer : bell::Task {
  public:
   // Callback types
   typedef std::function<void(std::shared_ptr<QueuedTrack>, bool)>
-      TrackLoadedCallback;
-  typedef std::function<size_t(uint8_t*, size_t, size_t
-
-#ifdef CONFIG_BELL_NOCODEC
-                               ,
-                               bool
-#endif
-                               )>
-      DataCallback;
-  typedef std::function<void(bool)> EOFCallback;
+      TrackChangedCallback;
+  typedef std::function<size_t(uint8_t*, size_t, size_t, bool)> DataCallback;
+  typedef std::function<void(bool)> TrackEndedCallback;
   typedef std::function<size_t(size_t)> SeekableCallback;
-  EOFCallback eofCallback;
+  TrackEndedCallback onTrackEnd;
 
   TrackPlayer(std::shared_ptr<cspot::Context> ctx,
               std::shared_ptr<cspot::TrackQueue> trackQueue,
-              EOFCallback eofCallback, TrackLoadedCallback loadedCallback);
+              TrackEndedCallback onTrackEnd,
+              TrackChangedCallback onTrackChanged);
   ~TrackPlayer();
 
   void loadTrackFromRef(TrackReference& ref, size_t playbackMs,
@@ -81,7 +75,7 @@ class TrackPlayer : bell::Task {
 
   std::unique_ptr<bell::WrappedSemaphore> playbackSemaphore;
 
-  TrackLoadedCallback trackLoaded;
+  TrackChangedCallback onTrackChanged;
   DataCallback dataCallback = nullptr;
 #ifdef CONFIG_BELL_NOCODEC
   SeekableCallback spaces_available = nullptr;
@@ -104,7 +98,7 @@ class TrackPlayer : bell::Task {
 #ifndef CONFIG_BELL_NOCODEC
   std::vector<uint8_t> pcmBuffer = std::vector<uint8_t>(1024);
 #else
-  std::vector<uint8_t> pcmBuffer = std::vector<uint8_t>(128);
+  std::vector<uint8_t> pcmBuffer = std::vector<uint8_t>(1024);
 #endif
 
   bool autoStart = false;

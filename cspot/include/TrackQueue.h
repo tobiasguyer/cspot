@@ -36,6 +36,7 @@ struct TrackInfo {
 class QueuedTrack {
  public:
   QueuedTrack(ProvidedTrack& ref, std::shared_ptr<cspot::Context> ctx,
+              std::shared_ptr<bell::WrappedSemaphore> playableSemaphore,
               int64_t requestedPosition = 0);
   ~QueuedTrack();
 
@@ -87,6 +88,7 @@ class QueuedTrack {
 
  private:
   std::shared_ptr<cspot::Context> ctx;
+  std::shared_ptr<bell::WrappedSemaphore> playableSemaphore;
 
   uint64_t pendingMercuryRequest = 0;
   uint32_t pendingAudioKeyRequest = 0;

@@ -1,17 +1,18 @@
 
-#include <dirent.h>
 #include <driver/gpio.h>
-#include <driver/sdmmc_host.h>
 #include <driver/sdspi_host.h>
 #include <driver/spi_master.h>
 #include "esp_log.h"
-#include "esp_vfs_fat.h"
-#include "sdmmc_cmd.h"
 
 #include "VS1053.h"
 
+#if defined(SD_IN_USE)
+#include <dirent.h>
+#include <driver/sdmmc_host.h>
+#include "esp_vfs_fat.h"
+#include "sdmmc_cmd.h"
 #define MOUNT_POINT "/sdcard"
-
+#endif
 SemaphoreHandle_t SPI_semaphore;
 #define TAG "INIT"
 void initAudioSink(std::shared_ptr<VS1053_SINK> VS1053) {
@@ -31,6 +32,7 @@ void initAudioSink(std::shared_ptr<VS1053_SINK> VS1053) {
 
   // VS1053 SETUP
   VS1053->init(HSPI_HOST, &SPI_semaphore);
+#if defined(SD_IN_USE)
   if (CONFIG_GPIO_SD_CS >= 0) {
     sdspi_device_config_t sd_device = SDSPI_DEVICE_CONFIG_DEFAULT();
     sd_device.gpio_cs = (gpio_num_t)CONFIG_GPIO_SD_CS;
@@ -99,7 +101,7 @@ void initAudioSink(std::shared_ptr<VS1053_SINK> VS1053) {
         printf("%s\n", n_name);
         printf("name:%s, ino: %i\n", entry->d_name, entry->d_ino);
         printf("stat_return_value:%i\n", stat(n_name, &file_stat));
-        printf("stat_mode:%i\n", file_stat.st_mode);
+        printf("stat_mode:%lu\n", file_stat.st_mode);
       }
       dir = opendir(MOUNT_POINT "/TRACKS");
       if (!dir)
@@ -110,5 +112,6 @@ void initAudioSink(std::shared_ptr<VS1053_SINK> VS1053) {
       closedir(dir);
     }
   }
+#endif
   VS1053->write_register(SCI_VOL, 10 | 10 << 8);
 }

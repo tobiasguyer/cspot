@@ -21,11 +21,21 @@ class CDNAudioFile {
  public:
   CDNAudioFile(const std::string& cdnUrl, const std::vector<uint8_t>& audioKey);
 
+#ifndef CONFIG_BELL_NOCODEC
   /**
   * @brief Opens connection to the provided cdn url, and fetches track metadata.
   */
   void openStream();
-
+#else
+  /**
+  * @brief Opens connection to the provided cdn url, and fetches track header.
+  * 
+  * @param header_size
+  * 
+  * @returns char* where to read data from
+  */
+  uint8_t* openStream(size_t&);
+#endif
   /**
   * @brief Read and decrypt part of the cdn stream
   *
@@ -34,7 +44,7 @@ class CDNAudioFile {
   *
   * @returns amount of bytes read
   */
-  size_t readBytes(uint8_t* dst, size_t bytes);
+  long readBytes(uint8_t* dst, size_t bytes);
 
   /**
   * @brief Returns current position in CDN stream
@@ -52,6 +62,8 @@ class CDNAudioFile {
   */
   void seek(size_t position);
 
+  long getHeader();
+
  private:
   const int OPUS_HEADER_SIZE = 8 * 1024;
   const int OPUS_FOOTER_PREFFERED = 1024 * 12;  // 12K should be safe
@@ -60,10 +72,11 @@ class CDNAudioFile {
   const int HTTP_BUFFER_SIZE = 1024 * 14;
   const int SPOTIFY_OPUS_HEADER = 167;
 
+#ifndef CONFIG_BELL_NOCODEC
   // Used to store opus metadata, speeds up read
   std::vector<uint8_t> header = std::vector<uint8_t>(OPUS_HEADER_SIZE);
   std::vector<uint8_t> footer;
-
+#endif
   // General purpose buffer to read data
   std::vector<uint8_t> httpBuffer = std::vector<uint8_t>(HTTP_BUFFER_SIZE);
 

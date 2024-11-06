@@ -39,13 +39,21 @@ void CDNAudioFile::seek(size_t newPos) {
   this->position = newPos;
 }
 
+#ifndef CONFIG_BELL_NOCODEC
+/**
+  * @brief Opens connection to the provided cdn url, and fetches track metadata.
+  */
 void CDNAudioFile::openStream() {
   CSPOT_LOG(info, "Opening HTTP stream to %s", this->cdnUrl.c_str());
 
   // Open connection, read first 128 bytes
   this->httpConnection = bell::HTTPClient::get(
       this->cdnUrl,
-      {bell::HTTPClient::RangeHeader::range(0, OPUS_HEADER_SIZE - 1)});
+      {bell::HTTPClient::RangeHeader::range(0, OPUS_HEADER_SIZE - 1)}, 20);
+  if (!httpConnection->stream().isOpen()) {
+    this->openStream();
+    return;
+  }
 
   this->httpConnection->stream().read((char*)header.data(), OPUS_HEADER_SIZE);
   this->totalFileSize =
@@ -72,8 +80,65 @@ void CDNAudioFile::openStream() {
   this->lastRequestPosition = 0;
   this->lastRequestCapacity = 0;
 }
+#else
+/**
+ * @brief Opens a connection to the CDN URL and fills the first buffer with track header data.
+ *
+ * @param header_size Reference to a size_t variable where the size of the header is stored.
+ * @return Pointer to the beginning of the HTTP buffer where the track header data is stored.
+ */
+uint8_t* CDNAudioFile::openStream(size_t& header_size) {
 
-size_t CDNAudioFile::readBytes(uint8_t* dst, size_t bytes) {
+  // Open connection, fill first buffer
+  this->httpConnection = bell::HTTPClient::get(
+      this->cdnUrl,
+      {bell::HTTPClient::RangeHeader::range(0, HTTP_BUFFER_SIZE - 1)}, 20);
+  if (!httpConnection->stream().isOpen()) {
+    return this->openStream(header_size);
+  }
+  this->lastRequestPosition = 0;
+  this->lastRequestCapacity = this->httpConnection->contentLength();
+  this->totalFileSize =
+      this->httpConnection->totalLength() - SPOTIFY_OPUS_HEADER;
+
+  this->httpConnection->stream().read((char*)this->httpBuffer.data(),
+                                      lastRequestCapacity);
+  this->decrypt(this->httpBuffer.data(), lastRequestCapacity,
+                this->lastRequestPosition);
+  this->position = getHeader();
+  header_size = this->position;
+  return &httpBuffer[0];
+}
+#endif
+
+/**
+ * @brief Finds the position of the first audio frame in the HTTP response.
+ *
+ * The OGG Vorbis file starts with three headers. They contain valuable information
+ * for decoding the audio. 
+ *
+ * @return The position of the first audio frame in the HTTP response.
+ */
+long CDNAudioFile::getHeader() {
+  uint32_t offset = SPOTIFY_OPUS_HEADER;
+
+  for (int i = 0; i < 3; ++i) {
+    offset += 26;
+    uint32_t segmentCount = httpBuffer[offset];
+    uint32_t segmentEnd = segmentCount + offset + 1;
+    ++offset;
+
+    for (uint32_t j = offset; j < segmentEnd; ++j) {
+      offset += httpBuffer[j];
+    }
+
+    offset += segmentCount;
+  }
+
+  return offset;
+}
+
+long CDNAudioFile::readBytes(uint8_t* dst, size_t bytes) {
   size_t offsetPosition = position + SPOTIFY_OPUS_HEADER;
   size_t actualFileSize = this->totalFileSize + SPOTIFY_OPUS_HEADER;
 
@@ -81,6 +146,7 @@ size_t CDNAudioFile::readBytes(uint8_t* dst, size_t bytes) {
     return 0;
   }
 
+#ifndef CONFIG_BELL_NOCODEC
   // // Opus tries to read header, use prefetched data
   if (offsetPosition < OPUS_HEADER_SIZE &&
       bytes + offsetPosition <= OPUS_HEADER_SIZE) {
@@ -107,6 +173,7 @@ size_t CDNAudioFile::readBytes(uint8_t* dst, size_t bytes) {
   }
 
   // Data not in the headers. Make sense of whats going on.
+#endif
   // Position in bounds :)
   if (offsetPosition >= this->lastRequestPosition &&
       offsetPosition < this->lastRequestPosition + this->lastRequestCapacity) {
@@ -130,9 +197,11 @@ size_t CDNAudioFile::readBytes(uint8_t* dst, size_t bytes) {
       this->enableRequestMargin = false;
     }
 
-    this->httpConnection->get(
-        cdnUrl, {bell::HTTPClient::RangeHeader::range(
-                    requestPosition, requestPosition + HTTP_BUFFER_SIZE - 1)});
+    if (!this->httpConnection->get(
+            cdnUrl,
+            {bell::HTTPClient::RangeHeader::range(
+                requestPosition, requestPosition + HTTP_BUFFER_SIZE - 1)}))
+      return -1;
     this->lastRequestPosition = requestPosition;
     this->lastRequestCapacity = this->httpConnection->contentLength();
 

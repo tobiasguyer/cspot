@@ -32,14 +32,11 @@ CliPlayer::CliPlayer(std::unique_ptr<AudioSink> sink,
   this->dsp = std::make_shared<bell::BellDSP>(this->centralAudioBuffer);
 #endif
 
-  this->handler->trackPlayer->setDataCallback([this](uint8_t* data,
-                                                     size_t bytes,
-#ifdef CONFIG_BELL_NOCODEC
-                                                     bool STORAGE_VOLATILE,
-#endif
-                                                     size_t trackId) {
-    return this->centralAudioBuffer->writePCM(data, bytes, trackId);
-  });
+  this->handler->trackPlayer->setDataCallback(
+      [this](uint8_t* data, size_t bytes, size_t trackId,
+             bool STORAGE_VOLATILE) {
+        return this->centralAudioBuffer->writePCM(data, bytes, trackId);
+      });
 
   this->isPaused = false;
 
@@ -132,6 +129,7 @@ void CliPlayer::runTask() {
             tracks.at(0)->trackMetrics->endTrack();
             this->handler->ctx->playbackMetrics->sendEvent(tracks[0]);
             tracks.clear();
+            this->handler->putPlayerState();
           }
           lastHash = 0;
         }
@@ -143,7 +141,7 @@ void CliPlayer::runTask() {
             tracks.at(0)->trackMetrics->endTrack();
             this->handler->ctx->playbackMetrics->sendEvent(tracks[0]);
             tracks.pop_front();
-            this->handler->trackPlayer->eofCallback(true);
+            this->handler->trackPlayer->onTrackEnd(true);
           }
           lastHash = chunk->trackHash;
           tracks.at(0)->trackMetrics->startTrackPlaying(

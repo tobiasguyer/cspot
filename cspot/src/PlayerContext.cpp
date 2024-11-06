@@ -14,109 +14,161 @@
 #include "nlohmann/json_fwd.hpp"  // for json
 #endif
 
+#define METADATA_STRING "metadata"
+#define SMART_SHUFFLE_STRING "shuffle.distribution"
+
 using namespace cspot;
+/**
+ * @brief Create a C string from a JSON object string value.
+ *
+ * @param[in] jsonObject The JSON object.
+ * @param[in] key The key to look up.
+ * @return The C string or NULL if the key isn't found or the value is empty.
+ */
 char* PlayerContext::createStringReferenceIfFound(
     nlohmann::json::value_type& jsonObject, const char* key) {
-  if (jsonObject.find(key) != jsonObject.end()) {
-    std::string value = jsonObject.at(key).get<std::string>();
+  auto object = jsonObject.find(key);
+  if (object != jsonObject.end()) {
+    std::string value = object.value();
     if (value.size())
       return strdup(value.c_str());
   }
   return NULL;
 }
-void PlayerContext::resolveRadio(
+
+/**
+ * @brief Retrieve metadata from a JSON object if a key is found.
+ *
+ * This function searches for a specified key in a JSON object. If the key is found,
+ * it creates a metadata entry with the key and its corresponding value.
+ *
+ * @param[in] jsonObject The JSON object to search.
+ * @param[in] key The key to look for in the JSON object.
+ * @param[out] metadata The metadata entry to populate if the key is found.
+ * @return True if the key is found and metadata is populated, false otherwise.
+ */
+bool createMetadataIfFound(nlohmann::json::value_type& jsonObject,
+                           const char* key,
+                           ProvidedTrack_MetadataEntry& metadata) {
+  // Find the key in the JSON object
+  auto object = jsonObject.find(key);
+
+  // Check if the key exists in the JSON object
+  if (object != jsonObject.end()) {
+    std::string value = object.value();
+
+    // Populate metadata with the key and its value
+    metadata = {strdup(key), value.size() ? strdup(value.c_str()) : NULL};
+    return true;
+  }
+
+  // Return false if the key is not found
+  return false;
+}
+
+template <typename T>
+T getFromJsonObject(nlohmann::json::value_type& jsonObject, const char* key) {
+  T value;
+  auto object = jsonObject.find(key);
+  if (object != jsonObject.end())
+    value = object.value();
+  return value;
+}
+
+/**
+ * @brief Query the autoplay service for a context.
+ *
+ * This function queries the autoplay service if a context is autoplay-enabled.
+ * If the context is autoplay-enabled, it resolves the context into a tracklist.
+ *
+ * @param[in] metadata_map The metadata to pass to the autoplay service.
+ * @param[in] responseFunction The function to call with the resolved tracklist.
+ * @param[in] secondTry If true, use the first track in the tracklist as the context URI
+ *                      instead of the context URI from the player state.
+ */
+void PlayerContext::autoplayQuery(
     std::vector<std::pair<std::string, std::string>> metadata_map,
     void (*responseFunction)(void*), bool secondTry) {
-  CSPOT_LOG(debug, "Resolve autoplay context: %s",
-            secondTry ? tracks->at(0).uri : playerState->context_uri);
+  if (next_page_url != NULL)
+    resolveRadio(metadata_map, responseFunction, next_page_url);
   std::string requestUrl =
       string_format("hm://autoplay-enabled/query?uri=%s",
                     secondTry ? tracks->at(0).uri : playerState->context_uri);
+  CSPOT_LOG(debug, "Querying autoplay: %s", &requestUrl[0]);
   auto responseHandler = [this, metadata_map, responseFunction,
-                          secondTry](MercurySession::Response& res) {
-    if (res.fail || !res.parts.size()) {
-      if (secondTry)
-        resolveRadio(metadata_map, responseFunction, true);
+                          secondTry](MercurySession::Response res) {
+    if (res.fail || !res.parts.size() || !res.parts[0].size()) {
+      if (!secondTry)
+        return autoplayQuery(metadata_map, responseFunction, true);
       else
-        return responseFunction(NULL);
+        return;  // responseFunction(NULL);
     }
     std::string resolve_autoplay =
         std::string(res.parts[0].begin(), res.parts[0].end());
     std::string requestUrl;
-    if (radio_offset)
-      requestUrl = (std::string)next_page_url;
-    else {
-      auto trackRef = tracks->end() - 1;
-      while (
-          trackRef != tracks->begin() &&
-          (!trackRef->provider || strcmp(trackRef->provider, "context") != 0)) {
-        trackRef--;
-      }
-      if (strcmp(trackRef->provider, "context") == 0)
+    {
+      if (strcmp(tracks->back().provider, "context") == 0)
         requestUrl = string_format(
             "hm://radio-apollo/v3/stations/%s?autoplay=true&offset=%i",
-            &resolve_autoplay[0], trackRef->original_index);
+            &resolve_autoplay[0], tracks->back().original_index);
       else {
         requestUrl = "hm://radio-apollo/v3/tracks/" +
                      (std::string)playerState->context_uri +
                      "?autoplay=true&count=50&isVideo=false&prev_tracks=";
-        uint8_t copiedTracks = 0;
+        bool copiedTracks = false;
+        auto trackRef =
+            tracks->size() > 50 ? tracks->end() - 50 : tracks->begin();
         while (trackRef != tracks->end()) {
-          if (strcmp(trackRef->provider, "autoplay") == 0 &&
+          if (trackRef->removed == NULL &&  //is no demlimiter
               (trackRef->uri && strrchr(trackRef->uri, ':'))) {
             if (copiedTracks)
               requestUrl += ",";
             requestUrl += (std::string)(strrchr(trackRef->uri, ':') + 1);
-            copiedTracks++;
+            copiedTracks = true;
           }
           trackRef++;
         }
       }
+      resolveRadio(metadata_map, responseFunction, &requestUrl[0]);
     }
-    auto responseHandler = [this, metadata_map,
-                            responseFunction](MercurySession::Response& res) {
-      if (res.fail || !res.parts.size())
-        return responseFunction(NULL);
-      if (!res.parts[0].size())
-        return responseFunction(NULL);
-      std::scoped_lock lock(trackListMutex);
-      // remove old_tracks, keep 5 tracks in memory
-      int remove_tracks = ((int)*index) - 5;
-      if (remove_tracks > 0) {
-        for (int i = 0; i < remove_tracks; i++) {
-          if (tracks->at(i).full_metadata_count)
-            tracks->at(i).metadata_count = tracks->at(i).full_metadata_count;
-          pb_release(ProvidedTrack_fields, &tracks->at(i));
-        }
-        tracks->erase(tracks->begin(), tracks->begin() + remove_tracks);
-      }
-      *index = (uint8_t)(remove_tracks < 0 ? 5 + remove_tracks : 5);
-      auto jsonResult = nlohmann::json::parse(res.parts[0]);
-      if (jsonResult.find("uri") != jsonResult.end())
-        context_uri = jsonResult.at("uri").get<std::string>();
-      if (next_page_url != NULL)
-        free(next_page_url);
-      next_page_url = createStringReferenceIfFound(jsonResult, "next_page_url");
-      std::vector<std::pair<std::string, std::string>> metadata = metadata_map;
-      metadata.push_back(std::make_pair("context_uri", context_uri));
-      metadata.push_back(std::make_pair("entity_uri", context_uri));
-      metadata.push_back(std::make_pair("iteration", "0"));
-      metadata.insert(metadata.begin(),
-                      std::make_pair("autoplay.is_autoplay", "true"));
-      metadata.push_back(std::make_pair("track_player", "audio"));
-      metadata.push_back(
-          std::make_pair("actions.skipping_next_past_track", "resume"));
-      metadata.push_back(
-          std::make_pair("actions.skipping_prev_past_track", "resume"));
-      jsonToTracklist(tracks, metadata, jsonResult["tracks"], "autoplay", 0);
-      radio_offset++;
-      responseFunction(NULL);
-    };
-    ctx->session->execute(MercurySession::RequestType::GET, requestUrl,
-                          responseHandler);
   };
   ctx->session->execute(MercurySession::RequestType::GET, requestUrl,
                         responseHandler);
+}
+
+void PlayerContext::resolveRadio(
+    std::vector<std::pair<std::string, std::string>> metadata_map,
+    void (*responseFunction)(void*), char* url) {
+  CSPOT_LOG(debug, "Resolve radio : %s", &url[0]);
+  auto responseHandler = [this, metadata_map,
+                          responseFunction](MercurySession::Response res) {
+    if (res.fail || !res.parts.size())
+      return responseFunction(NULL);
+    if (!res.parts[0].size())
+      return responseFunction(NULL);
+    //std::scoped_lock lock(trackListMutex);
+    // remove old_tracks, keep 5 tracks in memory
+    int remove_tracks = ((int)*index) - 5;
+    if (remove_tracks > 0) {
+      cspot::TrackReference::deleteTracksInRange(tracks, 0, remove_tracks - 1);
+      *index = (uint8_t)(remove_tracks < 0 ? 5 + remove_tracks : 5);
+    }
+    auto jsonResult = nlohmann::json::parse(res.parts[0]);
+    context_uri = jsonResult.value("uri", context_uri);
+    if (next_page_url != NULL)
+      free(next_page_url);
+    next_page_url = createStringReferenceIfFound(jsonResult, "next_page_url");
+    std::vector<std::pair<std::string, std::string>> metadata = metadata_map;
+    metadata.push_back(std::make_pair("context_uri", context_uri));
+    metadata.push_back(std::make_pair("entity_uri", context_uri));
+    metadata.insert(metadata.begin(),
+                    std::make_pair("autoplay.is_autoplay", "true"));
+    metadata.push_back(std::make_pair("track_player", "audio"));
+    jsonToTracklist(tracks, metadata, jsonResult["tracks"], "autoplay", 0);
+    radio_offset++;
+    responseFunction(NULL);
+  };
+  ctx->session->execute(MercurySession::RequestType::GET, url, responseHandler);
 }
 
 static unsigned long distributionToIndex(std::string d) {
@@ -130,20 +182,17 @@ void PlayerContext::createIndexBasedOnTracklist(
   alternative_index.clear();
   std::vector<uint32_t> shuffle_index;
   bool smart_shuffle =
-      (json_tracks.at(0).find("metadata") == json_tracks.at(0).end() ||
-       json_tracks.at(0).find("metadata")->find("shuffle.distribution") ==
-           json_tracks.at(0).find("metadata")->end())
+      (json_tracks.at(0).find(METADATA_STRING) == json_tracks.at(0).end() ||
+       json_tracks.at(0).find(METADATA_STRING)->find(SMART_SHUFFLE_STRING) ==
+           json_tracks.at(0).find(METADATA_STRING)->end())
           ? false
           : true;
   for (int i = 0; i < tracks->size(); i++) {
     if (strstr(tracks->at(i).uri, "spotify:delimiter")) {
       uint8_t release_offset = 1;
-      while (i + release_offset < tracks->size()) {
-        cspot::TrackReference::pbReleaseProvidedTrack(
-            std::addressof(tracks->at(i + release_offset)));
-        release_offset++;
-      }
-      tracks->erase(tracks->begin() + i, tracks->end());
+      CSPOT_LOG(info, "deleting %i tracks", tracks->size() - (i + 1));
+      cspot::TrackReference::deleteTracksInRange(tracks, i + 1,
+                                                 tracks->size() - 1);
       break;
     }
   }
@@ -152,15 +201,14 @@ void PlayerContext::createIndexBasedOnTracklist(
   for (int i = 0; i < json_tracks.size(); i++) {
     if (smart_shuffle) {
       alternative_index[distributionToIndex(json_tracks.at(i)
-                                                .find("metadata")
-                                                ->find("shuffle.distribution")
+                                                .find(METADATA_STRING)
+                                                ->find(SMART_SHUFFLE_STRING)
                                                 ->get<std::string>()) -
                         1] = i;
     } else if (!shuffle)
       alternative_index.push_back(i);
     for (auto& track : *tracks) {
-      if (strcmp(track.uri,
-                 json_tracks.at(i).at("uri").get<std::string>().c_str()) == 0) {
+      if (track.uri == json_tracks.at(i)["uri"].get_ref<const std::string&>()) {
         track.original_index = i;
         track.page = page;
         if (shuffle && !smart_shuffle)
@@ -182,6 +230,8 @@ void PlayerContext::createIndexBasedOnTracklist(
                              shuffle_index.begin(), shuffle_index.end());
   }
 }
+void jsonToDevice() {}
+
 uint8_t PlayerContext::jsonToTracklist(
     std::vector<ProvidedTrack>* tracks,
     std::vector<std::pair<std::string, std::string>> metadata_map,
@@ -205,12 +255,12 @@ uint8_t PlayerContext::jsonToTracklist(
   while (tracks->size() < MAX_TRACKS && offset < json_tracks.size()) {
 
     ProvidedTrack new_track = ProvidedTrack_init_zero;
-    int64_t index = radio ? offset : alternative_index[offset];
-    if (index >= json_tracks.size() || index < 0) {
+    int64_t index_ = radio ? offset : alternative_index[offset];
+    if (index_ >= json_tracks.size() || index_ < 0) {
       offset++;
       continue;
     }
-    auto track = json_tracks.at(index);
+    auto track = json_tracks.at(index_);
     new_track.uri = createStringReferenceIfFound(track, "uri");
     new_track.uid = createStringReferenceIfFound(track, "uid");
     new_track.provider = strdup(provider);
@@ -221,14 +271,11 @@ uint8_t PlayerContext::jsonToTracklist(
           strdup(metadata.second.c_str());
       metadata_offset++;
     }
-    if (track.find("metadata") != track.end()) {
-      if (track.at("metadata").find("decision_id") !=
-          track.at("metadata").end()) {
-        new_track.metadata[metadata_offset].key = strdup("decision_id");
-        new_track.metadata[metadata_offset].value =
-            strdup(std::string(track.at("metadata").at("decision_id")).c_str());
-        metadata_offset++;
-      }
+    auto json_metadata = track.find(METADATA_STRING);
+    if (json_metadata != track.end()) {
+      metadata_offset += createMetadataIfFound(
+          *json_metadata, "decision_id", new_track.metadata[metadata_offset]);
+      //metadata_offset += createMetadataIfFound(*json_metadata, "provider", new_track.metadata[metadata_offset]);
       new_track.metadata_count = metadata_offset;
       for (auto metadata : track.at("metadata").items()) {
         if (metadata.key() != "decision_id" &&
@@ -245,7 +292,7 @@ uint8_t PlayerContext::jsonToTracklist(
     new_track.full_metadata_count = metadata_offset;
     if (!radio)
       new_track.metadata_count = metadata_offset;
-    new_track.original_index = index;
+    new_track.original_index = index_;
     new_track.page = page;
     tracks->push_back(new_track);
     copiedTracks++;
@@ -257,19 +304,13 @@ uint8_t PlayerContext::jsonToTracklist(
     new_track.uid = strdup("delimiter0");
     new_track.provider = strdup("context");
     new_track.removed = strdup("context/delimiter");
-    metadata_map.insert(metadata_map.begin(), std::make_pair("hidden", "true"));
-    metadata_map.push_back(
-        std::make_pair("actions.skipping_next_past_track", "resume"));
-    metadata_map.push_back(
-        std::make_pair("actions.advancing_past_track", "resume"));
-    metadata_map.push_back(std::make_pair("iteration", "0"));
-    for (auto metadata : metadata_map) {
-      new_track.metadata[new_track.metadata_count].key =
-          strdup(metadata.first.c_str());
-      new_track.metadata[new_track.metadata_count].value =
-          strdup(metadata.second.c_str());
-      new_track.metadata_count++;
-    }
+    new_track.metadata[0] = {strdup("hidden"), strdup("true")};
+    new_track.metadata[1] = {strdup("actions.skipping_next_past_track"),
+                             strdup("resume")};
+    new_track.metadata[2] = {strdup("actions.advancing_past_track"),
+                             strdup("resume")};
+    new_track.metadata_count = 3;
+    new_track.full_metadata_count = 3;
     tracks->push_back(new_track);
   }
   return copiedTracks;
@@ -279,16 +320,17 @@ void PlayerContext::resolveTracklist(
     std::vector<std::pair<std::string, std::string>> metadata_map,
     void (*responseFunction)(void*), bool changed_state,
     bool trackIsPartOfContext) {
+  //  MAX_TRACKS
   if (changed_state) {
+    //free next_page_url
+    if (next_page_url != NULL)
+      free(next_page_url);
+    next_page_url = NULL;
+    //new Playlist was loaded, check if there is a delimiter in tracklist and if, delete all after
     for (int i = 0; i < tracks->size(); i++) {
       if (tracks->at(i).uri && strstr(tracks->at(i).uri, "spotify:delimiter")) {
-        uint8_t release_offset = 0;
-        while (i + release_offset < tracks->size()) {
-          cspot::TrackReference::pbReleaseProvidedTrack(
-              std::addressof(tracks->at(i + release_offset)));
-          release_offset++;
-        }
-        tracks->erase(tracks->begin() + i, tracks->end());
+        cspot::TrackReference::deleteTracksInRange(tracks, i,
+                                                   tracks->size() - 1);
         break;
       }
     }
@@ -307,26 +349,19 @@ void PlayerContext::resolveTracklist(
 
     auto responseHandler = [this, metadata_map, responseFunction, changed_state,
                             trackIsPartOfContext](
-                               MercurySession::Response& res) {
+                               MercurySession::Response res) {
       if (res.fail || !res.parts.size())
         return;
       if (!res.parts[0].size())
         return;
       auto jsonResult = nlohmann::json::parse(res.parts[0]);
-      std::scoped_lock lock(trackListMutex);
       uint8_t copy_tracks = 0;
       if (tracks->size()) {
         // remove old_tracks, keep 5 tracks in memory
         int remove_tracks = ((int)*index) - 5;
-        if (remove_tracks > 0) {
-          for (int i = 0; i < remove_tracks; i++) {
-            if (tracks->at(i).full_metadata_count >
-                tracks->at(i).metadata_count)
-              tracks->at(i).metadata_count = tracks->at(i).full_metadata_count;
-            pb_release(ProvidedTrack_fields, &tracks->at(i));
-          }
-          tracks->erase(tracks->begin(), tracks->begin() + remove_tracks);
-        }
+        if (remove_tracks > 0)
+          cspot::TrackReference::deleteTracksInRange(tracks, 0,
+                                                     remove_tracks - 1);
         *index = (uint8_t)(remove_tracks < 0 ? 5 + remove_tracks : 5);
 
         auto trackref = tracks->end() - 1;
@@ -338,8 +373,9 @@ void PlayerContext::resolveTracklist(
         }
         //if no normal track was found, resolve radio
         if (strcmp(trackref->provider, "queue") == 0)
-          return resolveRadio(metadata_map, responseFunction);
+          return autoplayQuery(metadata_map, responseFunction);
       looking_for_playlisttrack:;
+        // taskYIELD();
         //if last track was a smart_shuffled track
         if (trackref != tracks->begin()) {
           if (trackref->removed != NULL ||
@@ -396,21 +432,22 @@ void PlayerContext::resolveTracklist(
               createIndexBasedOnTracklist(
                   tracks, jsonResult["pages"][i]["tracks"],
                   playerState->options.shuffling_context, i);
-              if (jsonResult["pages"][i]["tracks"].at(0).find("metadata") !=
+              if (jsonResult["pages"][i]["tracks"].at(0).find(
+                      METADATA_STRING) !=
                       jsonResult["pages"][i]["tracks"].at(0).end() &&
                   jsonResult["pages"][i]["tracks"]
                           .at(0)
-                          .find("metadata")
-                          ->find("shuffle.distribution") !=
+                          .find(METADATA_STRING)
+                          ->find(SMART_SHUFFLE_STRING) !=
                       jsonResult["pages"][i]["tracks"]
                           .at(0)
-                          .find("metadata")
+                          .find(METADATA_STRING)
                           ->end()) {
                 if (playerState->options.shuffling_context) {
                   if (alternative_index[0] != offset) {
-                    for (auto& index : alternative_index)
-                      if (index == offset) {
-                        index = alternative_index[0];
+                    for (auto& index_ : alternative_index)
+                      if (index_ == offset) {
+                        index_ = alternative_index[0];
                         alternative_index[0] = offset;
                         break;
                       }
@@ -430,8 +467,11 @@ void PlayerContext::resolveTracklist(
       if (!copy_tracks) {
         if (this->playerState->options.repeating_context || !tracks->size()) {
           if (*index >= tracks->size()) {
-            for (int i = 0; i < tracks->size(); i++)
+            for (int i = 0; i < tracks->size(); i++) {
               cspot::TrackReference::pbReleaseProvidedTrack(&tracks->at(i));
+
+              // taskYIELD();
+            }
             tracks->clear();
             *index = 0;
           } else
@@ -484,7 +524,7 @@ void PlayerContext::resolveTracklist(
                           playerState->options.shuffling_context, false);
 
         } else
-          return resolveRadio(metadata_map, responseFunction);
+          return autoplayQuery(metadata_map, responseFunction);
       }
       responseFunction(NULL);
     };
@@ -492,5 +532,5 @@ void PlayerContext::resolveTracklist(
                           responseHandler);
 
   } else
-    resolveRadio(metadata_map, responseFunction);
+    autoplayQuery(metadata_map, responseFunction);
 }

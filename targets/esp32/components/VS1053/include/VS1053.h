@@ -1,6 +1,7 @@
 #ifndef VS1053_H
 #define VS1053_H
 
+#include <inttypes.h>
 #include <cstring>     //for memset
 #include <deque>       //for dequeue
 #include <functional>  //for function
@@ -38,7 +39,7 @@
 
 #define VERSION 1
 #define VS1053_CHUNK_SIZE 16  // chunck size
-#define VS1053_PACKET_SIZE 8
+#define VS1053_PACKET_SIZE 32
 #define BUF_SIZE_CMD 1028
 #define BUF_SIZE_FEED 4096 * 4
 
@@ -79,7 +80,9 @@ class VS1053_TRACK {
   } state = tsPlaybackStart;
   size_t header_size = 0;
   size_t track_id;
+  StaticStreamBuffer_t xStaticStreamBuffer;
   StreamBufferHandle_t dataBuffer;
+  uint8_t* ucBufferStorage;
 
  private:
 };

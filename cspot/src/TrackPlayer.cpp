@@ -57,11 +57,12 @@ static long vorbisTellCb(TrackPlayer* self) {
 
 TrackPlayer::TrackPlayer(std::shared_ptr<cspot::Context> ctx,
                          std::shared_ptr<cspot::TrackQueue> trackQueue,
-                         EOFCallback eof, TrackLoadedCallback trackLoaded)
-    : bell::Task("cspot_player", 56 * 1024, 5, 1) {
+                         TrackEndedCallback onTrackEnd,
+                         TrackChangedCallback onTrackChanged)
+    : bell::Task("cspot_player", 48 * 1024, 5, 1) {
   this->ctx = ctx;
-  this->eofCallback = eof;
-  this->trackLoaded = trackLoaded;
+  this->onTrackEnd = onTrackEnd;
+  this->onTrackChanged = onTrackChanged;
   this->trackQueue = trackQueue;
   this->playbackSemaphore = std::make_unique<bell::WrappedSemaphore>(5);
 
@@ -133,14 +134,10 @@ void TrackPlayer::runTask() {
   bool endOfQueueReached = false;
 
   while (isRunning) {
+    CSPOT_LOG(error, "new Track stream");
     bool properStream = true;
-    // Ensure we even have any tracks to play
-    if (!this->trackQueue->preloadedTracks.size() ||
-        (!pendingReset && endOfQueueReached &&
-         this->trackQueue->preloadedTracks.size() == 1)) {
-      this->trackQueue->playableSemaphore->twait(300);
-      continue;
-    }
+    this->trackQueue->playableSemaphore->wait();
+    CSPOT_LOG(error, "all good with stream");
 
     // Last track was interrupted, reset to default
     if (pendingReset) {
@@ -166,6 +163,7 @@ void TrackPlayer::runTask() {
         // Reset required
         track = nullptr;
       }
+      CSPOT_LOG(error, "NULLPTR");
 
       BELL_SLEEP_MS(100);
       continue;
@@ -176,65 +174,59 @@ void TrackPlayer::runTask() {
 
     inFuture = trackOffset > 0;
 
-    if (track->state != QueuedTrack::State::READY) {
-      track->loadedSemaphore->twait(5000);
-
-      if (track->state != QueuedTrack::State::READY) {
-        CSPOT_LOG(error, "Track failed to load, skipping it");
-        this->eofCallback(false);
-        continue;
-      }
+    while (track->state != QueuedTrack::State::READY &&
+           track->state != QueuedTrack::State::FAILED) {
+      BELL_SLEEP_MS(100);
+      CSPOT_LOG(error, "track in state %i", (int)track->state);
+    }
+    if (track->state == QueuedTrack::State::FAILED) {
+      CSPOT_LOG(error, "Track failed to load, skipping it");
+      this->onTrackEnd(true);
+      continue;
     }
 
     currentSongPlaying = true;
+    track->trackMetrics->startTrack();
 
     {
       std::scoped_lock lock(playbackMutex);
       bool skipped = 0;
 
-      track->trackMetrics->startTrack();
       currentTrackStream = track->getAudioFile();
 
       // Open the stream
+#ifndef CONFIG_BELL_NOCODEC
       currentTrackStream->openStream();
-
+#else
+      size_t start_offset = 0;
+      uint8_t* headerBuf = currentTrackStream->openStream(start_offset);
+#endif
+      CSPOT_LOG(info, "opend stream");
       if (pendingReset || !currentSongPlaying) {
         continue;
       }
       track->trackMetrics->startTrackDecoding();
       track->trackMetrics->track_size = currentTrackStream->getSize();
 
-      this->trackLoaded(track, true);
+      this->onTrackChanged(track, true);
       startPaused = false;
 
 #ifndef CONFIG_BELL_NOCODEC
       int32_t r =
           ov_open_callbacks(this, &vorbisFile, NULL, 0, vorbisCallbacks);
 #else
-      size_t start_offset = 0;
-      size_t write_offset = 0;
-      while (!start_offset) {
-        size_t ret = this->currentTrackStream->readBytes(&pcmBuffer[0],
-                                                         pcmBuffer.size());
-        size_t written = 0;
-        size_t toWrite = ret;
-        if (!ret)
-          continue;
-        while (toWrite) {
-          written = dataCallback(pcmBuffer.data() + (ret - toWrite), toWrite,
-                                 tracksPlayed, 0);
-          if (written == 0) {
-            BELL_SLEEP_MS(1000);
-          }
-          toWrite -= written;
+      size_t toWrite = start_offset;
+      while (toWrite) {
+        size_t written = dataCallback(headerBuf + (start_offset - toWrite),
+                                      toWrite, tracksPlayed, 0);
+        if (written == 0) {
+          BELL_SLEEP_MS(10);
         }
-        track->written_bytes += ret;
-        start_offset = seekable_callback(tracksPlayed);
-        if (this->spaces_available(tracksPlayed) < pcmBuffer.size()) {
-          BELL_SLEEP_MS(50);
-          continue;
-        }
+        toWrite -= written;
       }
+
+      track->written_bytes += start_offset;
+      CSPOT_LOG(info, "start offset at %i", start_offset);
       float duration_lambda = 1.0 *
                               (currentTrackStream->getSize() - start_offset) /
                               track->trackInfo.duration;
@@ -272,15 +264,15 @@ void TrackPlayer::runTask() {
 #ifndef CONFIG_BELL_NOCODEC
           VORBIS_SEEK(&vorbisFile, track->requestedPosition);
 #else
-          uint32_t seekPosition =
-              track->requestedPosition * duration_lambda + start_offset;
+          uint32_t seekPosition = track->requestedPosition * duration_lambda +
+                                  seekable_callback(tracksPlayed);
           currentTrackStream->seek(seekPosition);
           skipped = true;
 #endif
           track->trackMetrics->newPosition(pendingSeekPositionMs);
           // Reset the pending seek position
           pendingSeekPositionMs = 0;
-          this->trackLoaded(track, false);
+          this->onTrackChanged(track, false);
         }
 
         long ret =
@@ -316,19 +308,11 @@ void TrackPlayer::runTask() {
 #ifdef CONFIG_BELL_NOCODEC
                 if (skipped) {
                   // Reset the pending seek position
-                  skipped = 0;
+                  skipped = false;
                 }
 #endif
                 written = dataCallback(pcmBuffer.data() + (ret - toWrite),
-                                       toWrite, tracksPlayed
-#ifdef CONFIG_BELL_NOCODEC
-                                       ,
-                                       skipped
-#endif
-                );
-              }
-              if (written == 0) {
-                BELL_SLEEP_MS(50);
+                                       toWrite, tracksPlayed, skipped);
               }
               toWrite -= written;
             }
@@ -353,7 +337,7 @@ void TrackPlayer::runTask() {
         endOfQueueReached = true;
       }
 #ifdef CONFIG_BELL_NOCODEC
-      this->eofCallback(properStream);
+      this->onTrackEnd(true);
 #endif
     }
   }

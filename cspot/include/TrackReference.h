@@ -9,7 +9,7 @@
 #include "pb_decode.h"
 #include "protobuf/connect.pb.h"
 
-#define TRACK_SEND_LIMIT 25
+#define TRACK_SEND_LIMIT 15
 
 namespace cspot {
 struct TrackReference {
@@ -38,8 +38,6 @@ struct TrackReference {
 
   Type type;
 
-  void decodeURI();
-
   bool operator==(const TrackReference& other) const;
 
   // Encodes list of track references into a pb structure, used by nanopb
@@ -53,6 +51,21 @@ struct TrackReference {
     for (auto& track : *tracklist)
       pbReleaseProvidedTrack(&track);
     tracklist->clear();
+  }
+
+  static void deleteTracksInRange(std::vector<ProvidedTrack>* tracks,
+                                  size_t start, size_t end) {
+    // Sanity check for the range bounds
+    if (start >= tracks->size() || end >= tracks->size() || start > end) {
+      return;  // Invalid range
+    }
+
+    // Release resources for each track in the specified range
+    for (size_t i = start; i <= end; ++i)
+      pbReleaseProvidedTrack(&tracks->at(i));
+
+    // Erase the range of tracks from the tracklist
+    tracks->erase(tracks->begin() + start, tracks->begin() + end + 1);
   }
 
   static void pbReleaseProvidedTrack(ProvidedTrack* track) {

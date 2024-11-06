@@ -9,17 +9,6 @@ static std::string empty_string = "";
 
 TrackReference::TrackReference() : type(Type::TRACK) {}
 
-void TrackReference::decodeURI() {
-  if (gid.size() == 0) {
-    // Episode GID is being fetched via base62 encoded URI
-    gid = base62Decode(uri).second;
-
-    if (uri.find("episode:") != std::string::npos) {
-      type = Type::EPISODE;
-    }
-  }
-}
-
 bool TrackReference::operator==(const TrackReference& other) const {
   return other.gid == gid && other.uri == uri;
 }

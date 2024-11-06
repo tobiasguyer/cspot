@@ -58,7 +58,7 @@ class TrackMetrics {
   std::shared_ptr<cspot::Context> ctx;
   std::vector<std::pair<uint64_t, uint64_t>> addInterval(
       std::vector<std::pair<uint64_t, uint64_t>>& intervals,
-      std::pair<std::uint64_t, std::uint64_t> newInterval) {
+      std::pair<uint64_t, uint64_t> newInterval) {
     // Add the new interval to the list of intervals
     intervals.push_back(newInterval);
 

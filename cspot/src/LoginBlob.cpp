@@ -41,11 +41,8 @@ std::string sha1_digest(const std::vector<uint8_t>& message) {
 }
 
 LoginBlob::LoginBlob(std::string name) {
-  char hash[32];
-  sprintf(hash, "%016zu", std::hash<std::string>{}(name));
-  // base is 142137fd329622137a14901634264e6f332e2411
   std::string mac_string = bell::getMacAddress();
-  CSPOT_LOG(info, "new mac : %s", mac_string.c_str());
+  CSPOT_LOG(info, "Mac-address : %s", mac_string.c_str());
   std::vector<uint8_t> mac(mac_string.begin(), mac_string.end());
   this->deviceId = sha1_digest(mac);
   this->crypto = std::make_unique<Crypto>();

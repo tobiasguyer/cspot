@@ -63,6 +63,8 @@ class DeviceStateHandler {
 
   void putDeviceState(PutStateReason member_type =
                           PutStateReason::PutStateReason_PLAYER_STATE_CHANGED);
+
+  void setDeviceState(PutStateReason put_state_reason);
   void putPlayerState(PutStateReason member_type =
                           PutStateReason::PutStateReason_PLAYER_STATE_CHANGED);
   void handleConnectState();
@@ -106,5 +108,6 @@ class DeviceStateHandler {
   }
 
   static void reloadTrackList(void*);
+  std::atomic<bool> resolvingContext = false;
 };
 }  // namespace cspot

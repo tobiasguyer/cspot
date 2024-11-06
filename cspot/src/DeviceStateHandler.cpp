@@ -16,6 +16,7 @@
 #include "NanoPBHelper.h"         // for pbEncode, pbPutString
 #include "Packet.h"               // for cspot
 #include "TrackReference.h"       // for cspot
+#include "WrappedSemaphore.h"     // for WrappedSemaphore
 #include "nlohmann/json.hpp"      // for basic_json<>::object_t, basic_json
 #include "nlohmann/json_fwd.hpp"  // for json
 #include "pb.h"                   // for pb_bytes_array_t, PB_BYTES_ARRAY_T_A...
@@ -27,12 +28,21 @@ static DeviceStateHandler* handler;
 
 void DeviceStateHandler::reloadTrackList(void*) {
 
+  if (handler->reloadPreloadedTracks) {
+    handler->needsToBeSkipped = true;
+    while (!handler->trackQueue->playableSemaphore->twait(1)) {};
+    handler->trackPlayer->start();
+    handler->trackPlayer->resetState();
+    handler->reloadPreloadedTracks = false;
+    handler->sendCommand(CommandType::PLAYBACK_START);
+  }
   if (!handler->offset) {
     if (handler->trackQueue->preloadedTracks.size())
       handler->trackQueue->preloadedTracks.clear();
     handler->trackQueue->preloadedTracks.push_back(
         std::make_shared<cspot::QueuedTrack>(
             handler->currentTracks[handler->offset], handler->ctx,
+            handler->trackQueue->playableSemaphore,
             handler->offsetFromStartInMillis));
     handler->device.player_state.track =
         handler->currentTracks[handler->offset];
@@ -62,6 +72,7 @@ void DeviceStateHandler::reloadTrackList(void*) {
     handler->trackQueue->preloadedTracks.push_back(
         std::make_shared<cspot::QueuedTrack>(
             handler->currentTracks[handler->offset - 1], handler->ctx,
+            handler->trackQueue->playableSemaphore,
             handler->offsetFromStartInMillis));
     handler->offsetFromStartInMillis = 0;
   }
@@ -76,21 +87,16 @@ void DeviceStateHandler::reloadTrackList(void*) {
                   ->currentTracks[handler->offset +
                                   handler->trackQueue->preloadedTracks.size() -
                                   1],
-              handler->ctx, 0));
+              handler->ctx, handler->trackQueue->playableSemaphore));
     }
-  }
-  if (handler->reloadPreloadedTracks) {
-    handler->needsToBeSkipped = true;
-    handler->trackPlayer->start();
-    handler->trackPlayer->resetState();
-    handler->reloadPreloadedTracks = false;
-    handler->sendCommand(CommandType::PLAYBACK_START);
   }
   if (handler->playerStateChanged) {
     handler->putPlayerState(
         PutStateReason::PutStateReason_PLAYER_STATE_CHANGED);
     handler->playerStateChanged = false;
   }
+  handler->resolvingContext.store(false);
+  //CSPOT_LOG(info,"heap_memory_check-safe = %i",heap_caps_check_integrity_all(true));
 }
 DeviceStateHandler::DeviceStateHandler(std::shared_ptr<cspot::Context> ctx) {
   handler = this;
@@ -99,7 +105,8 @@ DeviceStateHandler::DeviceStateHandler(std::shared_ptr<cspot::Context> ctx) {
   this->playerContext = std::make_shared<cspot::PlayerContext>(
       ctx, &this->device.player_state, &currentTracks, &offset);
 
-  auto EOFCallback = [this](bool loaded) {
+  auto onTrackEnd = [this](bool loaded) {
+    if (!loaded) {}
     CSPOT_LOG(debug, "Ended track, needs_to_be_skipped = %s",
               needsToBeSkipped ? "true" : "false");
     if (needsToBeSkipped) {
@@ -113,31 +120,42 @@ DeviceStateHandler::DeviceStateHandler(std::shared_ptr<cspot::Context> ctx) {
     needsToBeSkipped = true;
     if (!this->trackQueue->preloadedTracks.size())
       sendCommand(CommandType::DEPLETED);
+    if ((uint32_t)currentTracks.size() / 2 <= offset &&
+        !this->resolvingContext) {
+      //CSPOT_LOG(info,"heap_memory_check-safe = %i",heap_caps_check_integrity_all(true));
+      this->resolvingContext.store(true);
+      playerContext->resolveTracklist(metadata_map, reloadTrackList);
+      //CSPOT_LOG(info,"heap_memory_check-safe = %i",heap_caps_check_integrity_all(true));
+    }
   };
 
-  auto playerStateChangedCallback = [this](std::shared_ptr<QueuedTrack> track,
-                                           bool new_track = false) {
+  auto onTrackChanged = [this](std::shared_ptr<QueuedTrack> track,
+                               bool new_track = false) {
     CSPOT_LOG(debug, "Track loaded, new_track = %s",
               new_track ? "true" : "false");
     if (new_track) {
       this->device.player_state.timestamp =
-          this->ctx->timeProvider->getSyncedTimestamp();
-      //putPlayerState();
+          this->trackQueue->preloadedTracks[0]
+              ->trackMetrics->currentInterval->start;
+
+      this->device.player_state.duration = track->trackInfo.duration;
+      //    this->ctx->timeProvider->getSyncedTimestamp();
+      // putPlayerState(PutStateReason::PutStateReason_PICKER_OPENED);
       sendCommand(CommandType::PLAYBACK, trackQueue->preloadedTracks[0]);
-      if ((uint32_t)currentTracks.size() / 2 == offset)
-        playerContext->resolveTracklist(metadata_map, reloadTrackList);
     } else
       putPlayerState();
   };
 
-  this->trackPlayer = std::make_shared<TrackPlayer>(
-      ctx, trackQueue, EOFCallback, playerStateChangedCallback);
+  this->trackPlayer = std::make_shared<TrackPlayer>(ctx, trackQueue, onTrackEnd,
+                                                    onTrackChanged);
   CSPOT_LOG(info, "Started player");
 
-  auto connectStateSubscription = [this](MercurySession::Response& res) {
+  auto connectStateSubscription = [this](MercurySession::Response res) {
     if (res.fail || !res.parts.size())
       return;
-    if (strstr(res.mercuryHeader.uri, "player/command")) {
+    if (strstr(res.mercuryHeader.uri, "v1/devices/")) {
+      putDeviceState(PutStateReason::PutStateReason_SPIRC_NOTIFY);
+    } else if (strstr(res.mercuryHeader.uri, "player/command")) {
       if (res.parts[0].size())
         parseCommand(res.parts[0]);
     } else if (strstr(res.mercuryHeader.uri, "volume")) {
@@ -160,7 +178,7 @@ DeviceStateHandler::DeviceStateHandler(std::shared_ptr<cspot::Context> ctx) {
   CSPOT_LOG(info, "Added connect-state subscription");
 
   // the device connection status gets reported trough "hm://social-connect",if active
-  auto socialConnectSubscription = [this](MercurySession::Response& res) {
+  auto socialConnectSubscription = [this](MercurySession::Response res) {
     if (res.fail || !res.parts.size())
       return;
     if (res.parts[0].size()) {
@@ -200,7 +218,8 @@ DeviceStateHandler::DeviceStateHandler(std::shared_ptr<cspot::Context> ctx) {
 
   ctx->session->setConnectedHandler([this]() {
     CSPOT_LOG(info, "Registered new device");
-    this->putDeviceState(PutStateReason::PutStateReason_NEW_DEVICE);
+    this->putDeviceState(
+        PutStateReason_SPIRC_HELLO);  // : PutStateReason::PutStateReason_NEW_DEVICE);
     // Assign country code
     this->ctx->config.countryCode = this->ctx->session->getCountryCode();
   });
@@ -223,8 +242,8 @@ DeviceStateHandler::DeviceStateHandler(std::shared_ptr<cspot::Context> ctx) {
   device.device_info.capabilities = Capabilities{
       true,
       1,  //can_be_player
-      false,
-      0,  //restrict_to_local
+      true,
+      1,  //restrict_to_local
       true,
       1,  //gaia_eq_connect_id
       true,
@@ -260,9 +279,9 @@ DeviceStateHandler::DeviceStateHandler(std::shared_ptr<cspot::Context> ctx) {
       false,
       0,  //is_voice_enabled
       true,
-      1,  //needs_full_player_state
+      0,  //needs_full_player_state //overuses MercuryManager, but keeps connection for outside wlan alive
       false,
-      1,  //supports_gzip_pushes
+      0,  //supports_gzip_pushes
       false,
       0,  //supports_lossless_audio
       true,
@@ -298,7 +317,7 @@ DeviceStateHandler::~DeviceStateHandler() {
 }
 
 void DeviceStateHandler::putDeviceState(PutStateReason put_state_reason) {
-  std::scoped_lock lock(playerStateMutex);
+  //std::scoped_lock lock(playerStateMutex);
   std::string uri =
       "hm://connect-state/v1/devices/" + this->ctx->config.deviceId + "/";
 
@@ -343,7 +362,7 @@ void DeviceStateHandler::putDeviceState(PutStateReason put_state_reason) {
   tempPutReq.device = Device_init_zero;
   pb_release(PutStateRequest_fields, &tempPutReq);
   auto parts = MercurySession::DataParts({putStateRequest});
-  auto responseLambda = [this](MercurySession::Response& res) {
+  auto responseLambda = [this](MercurySession::Response res) {
     if (res.fail || !res.parts.size())
       return;
   };
@@ -352,7 +371,7 @@ void DeviceStateHandler::putDeviceState(PutStateReason put_state_reason) {
 }
 
 void DeviceStateHandler::putPlayerState(PutStateReason put_state_reason) {
-  std::scoped_lock lock(playerStateMutex);
+  //std::scoped_lock lock(playerStateMutex);
   std::string uri =
       "hm://connect-state/v1/devices/" + this->ctx->config.deviceId + "/";
   PutStateRequest tempPutReq = {};
@@ -367,16 +386,20 @@ void DeviceStateHandler::putPlayerState(PutStateReason put_state_reason) {
   tempPutReq.put_state_reason = put_state_reason;
   tempPutReq.last_command_message_id = last_message_id;
   tempPutReq.has_started_playing_at = true;
-  tempPutReq.started_playing_at = this->started_playing_at;
+  tempPutReq.started_playing_at =
+      this->trackQueue->preloadedTracks[0]->trackMetrics->trackHeaderTime;
   tempPutReq.has_has_been_playing_for_ms = true;
   tempPutReq.has_been_playing_for_ms =
-      this->ctx->timeProvider->getSyncedTimestamp() - this->started_playing_at;
+      this->ctx->timeProvider->getSyncedTimestamp() -
+      this->trackQueue->preloadedTracks[0]->trackMetrics->trackHeaderTime;
   tempPutReq.has_client_side_timestamp = true;
   tempPutReq.client_side_timestamp =
       this->ctx->timeProvider->getSyncedTimestamp();
   tempPutReq.has_only_write_player_state = true;
   tempPutReq.only_write_player_state = true;
   device.player_state.has_position_as_of_timestamp = true;
+  device.player_state.timestamp =
+      trackQueue->preloadedTracks[0]->trackMetrics->currentInterval->start;
   device.player_state.position_as_of_timestamp =
       (int64_t)trackQueue->preloadedTracks[0]->trackMetrics->getPosition();
   device.has_player_state = true;
@@ -481,7 +504,7 @@ void DeviceStateHandler::putPlayerState(PutStateReason put_state_reason) {
   pb_release(PutStateRequest_fields, &tempPutReq);
   auto parts = MercurySession::DataParts({putStateRequest});
 
-  auto responseLambda = [this](MercurySession::Response& res) {
+  auto responseLambda = [this](MercurySession::Response res) {
     if (res.fail || !res.parts.size())
       return;
   };
@@ -513,7 +536,7 @@ void DeviceStateHandler::skip(CommandType dir, bool notify) {
           trackQueue->preloadedTracks.push_back(
               std::make_shared<cspot::QueuedTrack>(
                   currentTracks[offset + trackQueue->preloadedTracks.size()],
-                  this->ctx, 0));
+                  this->ctx, this->trackQueue->playableSemaphore));
         }
       }
       offset++;
@@ -525,7 +548,8 @@ void DeviceStateHandler::skip(CommandType dir, bool notify) {
     trackQueue->preloadedTracks.pop_back();
     offset--;
     trackQueue->preloadedTracks.push_front(std::make_shared<cspot::QueuedTrack>(
-        currentTracks[offset - 1], this->ctx, 0));
+        currentTracks[offset - 1], this->ctx,
+        this->trackQueue->playableSemaphore));
   } else {
     if (trackQueue->preloadedTracks.size())
       trackQueue->preloadedTracks[0]->requestedPosition = 0;
@@ -544,9 +568,7 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
   if (data.size() <= 2)
     return;
   auto jsonResult = nlohmann::json::parse(data);
-
-  if (jsonResult.find("message_id") != jsonResult.end())
-    last_message_id = jsonResult["message_id"].get<uint32_t>();
+  last_message_id = jsonResult.value("message_id", last_message_id);
 
   auto command = jsonResult.find("command");
   if (command != jsonResult.end()) {
@@ -557,6 +579,7 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
 
     auto options = command->find("options");
 
+    // std::cout<<jsonResult.dump(2)<<std::endl;
     if (command->at("endpoint") == "transfer") {
       if (is_active)
         return;
@@ -595,7 +618,7 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
               logging_params->at("interaction_ids")[0].get<std::string>()));
         }
       }
-      auto responseHandler = [this](MercurySession::Response& res) {
+      auto responseHandler = [this](MercurySession::Response res) {
         if (res.fail || !res.parts.size())
           return;
         std::scoped_lock lock(trackQueue->tracksMutex);
@@ -663,8 +686,10 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
                                   responseHandler);
     } else if (this->is_active) {
       if (command->at("endpoint") == "play") {
+#ifndef CONFIG_BELL_NOCODEC
         handler->trackPlayer->stop();
         sendCommand(CommandType::DEPLETED);
+#endif
         playerContext->radio_offset = 0;
         std::scoped_lock lock(trackQueue->tracksMutex);
         trackQueue->preloadedTracks.clear();
@@ -677,20 +702,11 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
         for (int i = 0; i < currentTracks.size(); i++) {
           if (i > this->offset ||
               strcmp(currentTracks[i].provider, "queue") != 0) {
-            if (currentTracks[i].full_metadata_count >
-                currentTracks[i].metadata_count)
-              currentTracks[i].metadata_count =
-                  currentTracks[i].full_metadata_count;
-            pb_release(ProvidedTrack_fields, &currentTracks[i]);
-          } else
-            queued++;
+            cspot::TrackReference::pbReleaseProvidedTrack(&currentTracks[i]);
+            currentTracks.erase(currentTracks.begin() + i);
+            i--;
+          }
         }
-        if (queued) {
-          currentTracks.erase(currentTracks.begin());
-          currentTracks.erase(currentTracks.begin() + queued,
-                              currentTracks.end());
-        } else
-          currentTracks.clear();
 
         auto logging_params = command->find("logging_params");
         if (logging_params != command->end()) {
@@ -881,11 +897,12 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
         sendCommand(CommandType::PLAY);
       } else if (command->at("endpoint") == "skip_next") {
         ctx->playbackMetrics->end_reason = PlaybackMetrics::FORWARD_BTN;
-        needsToBeSkipped = false;
+#ifndef CONFIG_BELL_NOCODEC
+        this->needsToBeSkipped = false;
+#endif
         if (command->find("track") == command->end())
           skip(CommandType::SKIP_NEXT, false);
         else {
-          std::scoped_lock lock(playerContext->trackListMutex);
           offset = 0;
           for (auto track : currentTracks) {
             if (strcmp(command->find("track")
@@ -901,12 +918,12 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
           this->device.player_state.track = currentTracks[offset];
           for (auto i = offset;
                i < (currentTracks.size() < 3 + offset ? currentTracks.size()
-                                                      : 3 + offset) +
-                       offset;
+                                                      : 3 + offset);
                i++) {
             trackQueue->preloadedTracks.push_back(
-                std::make_shared<cspot::QueuedTrack>(currentTracks[i],
-                                                     this->ctx, 0));
+                std::make_shared<cspot::QueuedTrack>(
+                    currentTracks[i], this->ctx,
+                    this->trackQueue->playableSemaphore));
           }
           offset++;
           trackPlayer->resetState();
@@ -965,7 +982,8 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
           trackQueue->preloadedTracks.insert(
               trackQueue->preloadedTracks.begin() + 1 + queuedOffset,
               std::make_shared<cspot::QueuedTrack>(
-                  currentTracks[offset + queuedOffset], this->ctx, 0));
+                  currentTracks[offset + queuedOffset], this->ctx,
+                  this->trackQueue->playableSemaphore));
         }
 #ifndef CONFIG_BELL_NOCODEC
         this->trackPlayer->seekMs(
@@ -989,7 +1007,7 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
           for (uint8_t i = offset; i < currentTracks.size(); i++) {
             if (strcmp(currentTracks[i].provider, "queue") != 0)
               break;
-            pb_release(ProvidedTrack_fields, &currentTracks[i]);
+            cspot::TrackReference::pbReleaseProvidedTrack(&currentTracks[i]);
             currentTracks.erase(currentTracks.begin() + i);
             i--;
           }
@@ -1014,7 +1032,8 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
                 continue;
               }
             removeTrack:;
-              pb_release(ProvidedTrack_fields, &currentTracks[offset + i]);
+              cspot::TrackReference::pbReleaseProvidedTrack(
+                  &currentTracks[offset + i]);
               currentTracks.erase(currentTracks.begin() + offset + i);
               if (strcmp(currentTracks[offset + i].provider, "queue") != 0 ||
                   strcmp(command->at("next_tracks")[i]["uri"]
@@ -1034,7 +1053,7 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
                 std::make_shared<cspot::QueuedTrack>(
                     currentTracks[offset + trackQueue->preloadedTracks.size() -
                                   1],
-                    this->ctx, 0));
+                    this->ctx, this->trackQueue->playableSemaphore));
         }
 #ifndef CONFIG_BELL_NOCODEC
         this->trackPlayer->seekMs(
@@ -1123,19 +1142,14 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
         this->trackQueue->preloadedTracks.erase(
             this->trackQueue->preloadedTracks.begin(),
             this->trackQueue->preloadedTracks.end());
-        uint8_t queued = 0;
         for (int i = offset; i < currentTracks.size(); i++) {
           if (strcmp(currentTracks[i].provider, "queue") != 0) {
-            if (currentTracks[i].full_metadata_count >
-                currentTracks[i].metadata_count)
-              currentTracks[i].metadata_count =
-                  currentTracks[i].full_metadata_count;
-            pb_release(ProvidedTrack_fields, &currentTracks[i]);
-          } else
-            queued++;
+            cspot::TrackReference::pbReleaseProvidedTrack(
+                &currentTracks[offset + i]);
+            currentTracks.erase(currentTracks.begin() + offset + i);
+            i--;
+          }
         }
-        currentTracks.erase(currentTracks.begin() + offset + queued,
-                            currentTracks.end());
         playerContext->resolveTracklist(metadata_map, reloadTrackList, true);
         sendCommand(CommandType::SET_SHUFFLE,
                     (int32_t)(this->device.player_state.options

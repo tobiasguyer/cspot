@@ -272,13 +272,13 @@ appended_decision_id:;
   start_source = end_source;
 
 #ifndef CONFIG_HIDDEN
-  auto responseLambda = [=](MercurySession::Response& res) {
+  auto responseLambda = [=](MercurySession::Response res) {
   };
 
   auto parts = MercurySession::DataParts({msg});
   // Execute the request
-  ctx->session->execute(MercurySession::RequestType::POST, requestUrl,
-                        responseLambda, parts);
+  //ctx->session->execute(MercurySession::RequestType::POST, requestUrl,
+  //                    responseLambda, parts);
 #endif
   return msg;
 }
