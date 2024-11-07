@@ -90,7 +90,7 @@ void PlayerContext::autoplayQuery(
     std::vector<std::pair<std::string, std::string>> metadata_map,
     void (*responseFunction)(void*), bool secondTry) {
   if (next_page_url != NULL)
-    resolveRadio(metadata_map, responseFunction, next_page_url);
+    return resolveRadio(metadata_map, responseFunction, next_page_url);
   std::string requestUrl =
       string_format("hm://autoplay-enabled/query?uri=%s",
                     secondTry ? tracks->at(0).uri : playerState->context_uri);
@@ -146,7 +146,6 @@ void PlayerContext::resolveRadio(
       return responseFunction(NULL);
     if (!res.parts[0].size())
       return responseFunction(NULL);
-    //std::scoped_lock lock(trackListMutex);
     // remove old_tracks, keep 5 tracks in memory
     int remove_tracks = ((int)*index) - 5;
     if (remove_tracks > 0) {
@@ -375,7 +374,6 @@ void PlayerContext::resolveTracklist(
         if (strcmp(trackref->provider, "queue") == 0)
           return autoplayQuery(metadata_map, responseFunction);
       looking_for_playlisttrack:;
-        // taskYIELD();
         //if last track was a smart_shuffled track
         if (trackref != tracks->begin()) {
           if (trackref->removed != NULL ||
@@ -469,8 +467,6 @@ void PlayerContext::resolveTracklist(
           if (*index >= tracks->size()) {
             for (int i = 0; i < tracks->size(); i++) {
               cspot::TrackReference::pbReleaseProvidedTrack(&tracks->at(i));
-
-              // taskYIELD();
             }
             tracks->clear();
             *index = 0;
