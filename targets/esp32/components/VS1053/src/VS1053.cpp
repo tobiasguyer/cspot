@@ -122,7 +122,7 @@ esp_err_t VS1053_SINK::init(spi_host_device_t SPI,
   load_user_code(PLUGIN, PLUGIN_SIZE);
 #endif
   vTaskDelay(100 / portTICK_PERIOD_MS);
-  xTaskCreate(vs_feed, "track_feed", 4098 * 4, (void*)this, 1, &task_handle);
+  xTaskCreate(vs_feed, "track_feed", 4098 * 4, (void*)this, 10, &task_handle);
   //xTaskCreatePinnedToCore(vs_feed, "track_feed", 1028 * 20, (void*)this, 1, &task_handle, 1);
   return ESP_OK;
 }

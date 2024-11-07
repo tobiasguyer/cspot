@@ -21,13 +21,13 @@ VSPlayer::VSPlayer(std::shared_ptr<cspot::DeviceStateHandler> handler,
       [this](uint8_t* data, size_t bytes, size_t trackId,
              bool STORAGE_VOLATILE) {
         if (!this->track) {
-          this->track = std::make_shared<VS1053_TRACK>(trackId, 4098 * 16);
+          this->track = std::make_shared<VS1053_TRACK>(trackId, 4098 * 32);
           this->vsSink->new_track(this->track);
           BELL_LOG(error, "VSPlayer", "New track_id (%d)", trackId);
         }
         if (trackId != this->track->track_id) {
           this->vsSink->soft_stop_feed();
-          this->track = std::make_shared<VS1053_TRACK>(trackId, 4098 * 16);
+          this->track = std::make_shared<VS1053_TRACK>(trackId, 4098 * 32);
           this->vsSink->new_track(this->track);
           BELL_LOG(error, "VSPlayer", "New track_id (%d)", trackId);
         }
