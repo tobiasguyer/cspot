@@ -116,8 +116,8 @@ void MercurySession::handleReconnection() {
 void MercurySession::reconnect() {
   while (isRunning) {
     try {
-      this->conn = nullptr;
       this->shanConn = nullptr;
+      this->conn = nullptr;
       this->partials.clear();
       // Reset connections
       this->connectWithRandomAp();
@@ -178,8 +178,8 @@ void MercurySession::unregisterAudioKey(uint32_t sequenceId) {
 void MercurySession::disconnect() {
   CSPOT_LOG(info, "Disconnecting mercury session");
   isRunning.store(false);
-  conn->close();
   std::scoped_lock lock(this->isRunningMutex);
+  conn->close();
 }
 
 std::string MercurySession::getCountryCode() {
@@ -389,6 +389,8 @@ uint64_t MercurySession::executeSubscription(RequestType method,
   this->sequenceId += 1;
 
   try {
+    while (isReconnecting)
+      BELL_SLEEP_MS(100);
     this->shanConn->sendPacket(
         static_cast<std::underlying_type<RequestType>::type>(method),
         sequenceIdBytes);

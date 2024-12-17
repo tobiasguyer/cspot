@@ -67,6 +67,7 @@ menu "CSPOT Configuration"
         config CSPOT_STATUS_LED_TYPE_RMT
             bool "RMT - Addressable LED"
     endchoice
+
     choice CSPOT_LOGIN
     prompt "Login type"
     default CSPOT_LOGIN_ZEROCONF
@@ -81,7 +82,7 @@ menu "CSPOT Configuration"
         bool "Login with password"    
     endchoice
 
-    menu "username & password"
+    menu "Username & password"
         visible if CSPOT_LOGIN_PASS
         config CSPOT_LOGIN_USERNAME
         string "Spotify username"
@@ -93,6 +94,39 @@ menu "CSPOT Configuration"
             login with username and password
         endmenu
 
+    choice CSPOT_DISCOVERY_MODE
+    prompt "CSpot Device Visibility Mode"
+    default CSPOT_DISCOVERY_MODE_OPEN
+    
+    config CSPOT_DISCOVERY_MODE_OPEN
+        bool "Always visible in local network"
+        help
+            In this mode, the mDNS announcement remains active, making the device 
+            visible to all devices on the local network, even while it is actively 
+            connected and controlled. Playback rights can be transferred to another 
+            device without disconnecting.
+    
+    config CSPOT_DISCOVERY_MODE_VISIBLE_ON_DISCONNECTED
+        bool "Visible only when disconnected"
+        help
+            In this mode, the mDNS announcement is disabled when the device is 
+            actively connected and controlled. The device becomes visible on the 
+            local network only after it is disconnected or playback rights are
+            transferred.
+    endchoice
+
+    config CSPOT_STAY_CONNECTED_ON_TRANSFER
+        bool "Stay connected on playback transfer"
+        help
+            Enable this option to keep the CSpot device logged in and accessible during 
+            a playback rights transfer. If enabled, the device will remain accessible 
+            to other Spotify devices logged in with the same account after playback transfer.
+            
+            Note: If the device visibility is set to "Visible only when disconnected," 
+            the mDNS announcement will remain disabled during playback and playback transfers. 
+            The device will only announce itself on the local network after it is 
+            disconnected or an explicit mDNS "/close" command is received.
+            
     config UPDATE_FUTURE_TRACKS
         int "Send tracks to spotify"
     range 0 100

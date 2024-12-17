@@ -70,8 +70,11 @@ VSPlayer::VSPlayer(std::shared_ptr<cspot::DeviceStateHandler> handler,
           case cspot::DeviceStateHandler::CommandType::FLUSH:
             this->track->empty_feed();
             break;
-          //case cspot::DeviceStateHandler::CommandType::SEEK:
-          //break;
+          case cspot::DeviceStateHandler::CommandType::SKIP_NEXT:
+            [[fallthrough]];
+          case cspot::DeviceStateHandler::CommandType::SKIP_PREV:
+            this->vsSink->stop_feed();
+            break;
           case cspot::DeviceStateHandler::CommandType::PLAYBACK_START:
             if (this->track != nullptr) {
               this->track = nullptr;
@@ -118,7 +121,7 @@ void VSPlayer::state_callback(uint8_t state) {
   }
   if (state == 7) {
     currentTrack->trackMetrics->endTrack();
-    this->handler->ctx->playbackMetrics->sendEvent(currentTrack);
+    //this->handler->ctx->playbackMetrics->sendEvent(currentTrack);
     if (futureTrack != nullptr) {
       currentTrack = futureTrack;
       futureTrack = nullptr;

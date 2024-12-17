@@ -44,7 +44,7 @@ class TrackPlayer : bell::Task {
   TrackPlayer(std::shared_ptr<cspot::Context> ctx,
               std::shared_ptr<cspot::TrackQueue> trackQueue,
               TrackEndedCallback onTrackEnd,
-              TrackChangedCallback onTrackChanged);
+              TrackChangedCallback onTrackChanged, bool* track_repeat);
   ~TrackPlayer();
 
   void loadTrackFromRef(TrackReference& ref, size_t playbackMs,
@@ -54,7 +54,7 @@ class TrackPlayer : bell::Task {
                        SeekableCallback spaces_available = nullptr);
 
   // CDNTrackStream::TrackInfo getCurrentTrackInfo();
-  void seekMs(size_t ms);
+  void seekMs(size_t ms, bool loading = true);
   void resetState(bool paused = false);
 
 #ifndef CONFIG_BELL_NOCODEC
@@ -85,6 +85,7 @@ class TrackPlayer : bell::Task {
 
   // Playback control
   std::atomic<bool> currentSongPlaying;
+  bool* repeating_track_;
   std::mutex playbackMutex;
   std::mutex dataOutMutex;
 
@@ -95,11 +96,7 @@ class TrackPlayer : bell::Task {
   int currentSection;
 #endif
 
-#ifndef CONFIG_BELL_NOCODEC
   std::vector<uint8_t> pcmBuffer = std::vector<uint8_t>(1024);
-#else
-  std::vector<uint8_t> pcmBuffer = std::vector<uint8_t>(1024);
-#endif
 
   bool autoStart = false;
 

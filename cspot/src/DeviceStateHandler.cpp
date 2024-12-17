@@ -24,34 +24,79 @@
 
 using namespace cspot;
 
+#if defined(_WIN32) || defined(_WIN64)
+char* strndup(const char* str, size_t n) {
+  if (!str)
+    return nullptr;  // Handle null input gracefully
+  size_t len = std::strlen(str);
+  if (len > n)
+    len = n;                                 // Limit to n characters
+  char* copy = (char*)std::malloc(len + 1);  // Allocate memory
+  if (!copy)
+    return nullptr;             // Return null if allocation fails
+  std::memcpy(copy, str, len);  // Copy the characters
+  copy[len] = '\0';             // Null-terminate the string
+  return copy;
+}
+#endif
 static DeviceStateHandler* handler;
 
-void DeviceStateHandler::reloadTrackList(void*) {
-
-  if (handler->reloadPreloadedTracks) {
-    handler->needsToBeSkipped = true;
-    while (!handler->trackQueue->playableSemaphore->twait(1)) {};
-    handler->trackPlayer->start();
-    handler->trackPlayer->resetState();
-    handler->reloadPreloadedTracks = false;
-    handler->sendCommand(CommandType::PLAYBACK_START);
-  }
-  if (!handler->offset) {
-    if (handler->trackQueue->preloadedTracks.size())
-      handler->trackQueue->preloadedTracks.clear();
-    handler->trackQueue->preloadedTracks.push_back(
-        std::make_shared<cspot::QueuedTrack>(
-            handler->currentTracks[handler->offset], handler->ctx,
-            handler->trackQueue->playableSemaphore,
-            handler->offsetFromStartInMillis));
-    handler->device.player_state.track =
-        handler->currentTracks[handler->offset];
-    handler->offsetFromStartInMillis = 0;
-    handler->offset++;
+void DeviceStateHandler::reloadTrackList(void* data) {
+  if (data == NULL) {
+    if (handler->reloadPreloadedTracks) {
+      handler->needsToBeSkipped = true;
+      while (!handler->trackQueue->playableSemaphore->twait(1)) {};
+      handler->trackPlayer->start();
+      handler->trackPlayer->resetState();
+      handler->reloadPreloadedTracks = false;
+      handler->sendCommand(CommandType::PLAYBACK_START);
+      handler->device.player_state.track = handler->currentTracks[0];
+    }
+    if (!handler->offset) {
+      if (handler->trackQueue->preloadedTracks.size())
+        handler->trackQueue->preloadedTracks.clear();
+      handler->trackQueue->preloadedTracks.push_back(
+          std::make_shared<cspot::QueuedTrack>(
+              handler->currentTracks[handler->offset], handler->ctx,
+              handler->trackQueue->playableSemaphore,
+              handler->offsetFromStartInMillis));
+      handler->device.player_state.track =
+          handler->currentTracks[handler->offset];
+      handler->offsetFromStartInMillis = 0;
+      handler->offset++;
+    }
+    if (!handler->trackQueue->preloadedTracks.size()) {
+      handler->trackQueue->preloadedTracks.push_back(
+          std::make_shared<cspot::QueuedTrack>(
+              handler->currentTracks[handler->offset - 1], handler->ctx,
+              handler->trackQueue->playableSemaphore,
+              handler->offsetFromStartInMillis));
+      handler->offsetFromStartInMillis = 0;
+    }
+    if (handler->currentTracks.size() >
+        handler->trackQueue->preloadedTracks.size() + handler->offset) {
+      while (handler->currentTracks.size() >
+                 handler->trackQueue->preloadedTracks.size() +
+                     handler->offset &&
+             handler->trackQueue->preloadedTracks.size() < 3) {
+        handler->trackQueue->preloadedTracks.push_back(
+            std::make_shared<cspot::QueuedTrack>(
+                handler->currentTracks
+                    [handler->offset +
+                     handler->trackQueue->preloadedTracks.size() - 1],
+                handler->ctx, handler->trackQueue->playableSemaphore));
+      }
+    }
+    if (handler->playerStateChanged) {
+      handler->putPlayerState(
+          PutStateReason::PutStateReason_PLAYER_STATE_CHANGED);
+      handler->playerStateChanged = false;
+    }
   }
   if (strcmp(handler->currentTracks[handler->offset - 1].uri,
              "spotify:delimiter") == 0 &&
-      handler->device.player_state.is_playing) {
+      handler->device.player_state.is_playing &&
+      handler->currentTracks.size() <= handler->offset) {
     handler->ctx->playbackMetrics->end_reason = cspot::PlaybackMetrics::REMOTE;
     handler->ctx->playbackMetrics->end_source = "unknown";
     handler->trackPlayer->stop();
@@ -66,49 +111,26 @@ void DeviceStateHandler::reloadTrackList(void*) {
     handler->device.player_state.has_restrictions = false;
     handler->putPlayerState();
     handler->sendCommand(CommandType::DISC);
+#ifndef CONFIG_CSPOT_STAY_CONNECTED_ON_TRANSFER
+    handler->disconnect();
+#endif
     return;
-  }
-  if (!handler->trackQueue->preloadedTracks.size()) {
-    handler->trackQueue->preloadedTracks.push_back(
-        std::make_shared<cspot::QueuedTrack>(
-            handler->currentTracks[handler->offset - 1], handler->ctx,
-            handler->trackQueue->playableSemaphore,
-            handler->offsetFromStartInMillis));
-    handler->offsetFromStartInMillis = 0;
-  }
-  if (handler->currentTracks.size() >
-      handler->trackQueue->preloadedTracks.size() + handler->offset) {
-    while (handler->currentTracks.size() >
-               handler->trackQueue->preloadedTracks.size() + handler->offset &&
-           handler->trackQueue->preloadedTracks.size() < 3) {
-      handler->trackQueue->preloadedTracks.push_back(
-          std::make_shared<cspot::QueuedTrack>(
-              handler
-                  ->currentTracks[handler->offset +
-                                  handler->trackQueue->preloadedTracks.size() -
-                                  1],
-              handler->ctx, handler->trackQueue->playableSemaphore));
-    }
-  }
-  if (handler->playerStateChanged) {
-    handler->putPlayerState(
-        PutStateReason::PutStateReason_PLAYER_STATE_CHANGED);
-    handler->playerStateChanged = false;
   }
   handler->resolvingContext.store(false);
   //CSPOT_LOG(info,"heap_memory_check-safe = %i",heap_caps_check_integrity_all(true));
 }
-DeviceStateHandler::DeviceStateHandler(std::shared_ptr<cspot::Context> ctx) {
+DeviceStateHandler::DeviceStateHandler(std::shared_ptr<cspot::Context> ctx,
+                                       std::function<void()> onClose) {
   handler = this;
   this->ctx = ctx;
+  this->onClose = onClose;
   this->trackQueue = std::make_shared<cspot::TrackQueue>(ctx);
   this->playerContext = std::make_shared<cspot::PlayerContext>(
       ctx, &this->device.player_state, &currentTracks, &offset);
 
   auto onTrackEnd = [this](bool loaded) {
     if (!loaded) {}
-    CSPOT_LOG(debug, "Ended track, needs_to_be_skipped = %s",
-              needsToBeSkipped ? "true" : "false");
+    CSPOT_LOG(debug, "Ended track");
     if (needsToBeSkipped) {
       if (this->device.player_state.options.repeating_track)
         this->trackQueue->preloadedTracks[0]->requestedPosition = 0;
@@ -122,17 +144,13 @@ DeviceStateHandler::DeviceStateHandler(std::shared_ptr<cspot::Context> ctx) {
       sendCommand(CommandType::DEPLETED);
     if ((uint32_t)currentTracks.size() / 2 <= offset &&
         !this->resolvingContext) {
-      //CSPOT_LOG(info,"heap_memory_check-safe = %i",heap_caps_check_integrity_all(true));
       this->resolvingContext.store(true);
       playerContext->resolveTracklist(metadata_map, reloadTrackList);
-      //CSPOT_LOG(info,"heap_memory_check-safe = %i",heap_caps_check_integrity_all(true));
     }
   };
 
   auto onTrackChanged = [this](std::shared_ptr<QueuedTrack> track,
                                bool new_track = false) {
-    CSPOT_LOG(debug, "Track loaded, new_track = %s",
-              new_track ? "true" : "false");
     if (new_track) {
       this->device.player_state.timestamp =
           this->trackQueue->preloadedTracks[0]
@@ -146,8 +164,9 @@ DeviceStateHandler::DeviceStateHandler(std::shared_ptr<cspot::Context> ctx) {
       putPlayerState();
   };
 
-  this->trackPlayer = std::make_shared<TrackPlayer>(ctx, trackQueue, onTrackEnd,
-                                                    onTrackChanged);
+  this->trackPlayer = std::make_shared<TrackPlayer>(
+      ctx, trackQueue, onTrackEnd, onTrackChanged,
+      &device.player_state.options.repeating_track);
   CSPOT_LOG(info, "Started player");
 
   auto connectStateSubscription = [this](MercurySession::Response res) {
@@ -168,6 +187,10 @@ DeviceStateHandler::DeviceStateHandler(std::shared_ptr<cspot::Context> ctx) {
         pb_release(SetVolumeCommand_fields, &newVolume);
       }
     } else if (strstr(res.mercuryHeader.uri, "cluster")) {
+      if (0) {  // will send cluster info if new device logged in, but connect_state/cluster is called way too often(for example during each song) too send each time a putPlayerStateRequest
+                //if(is_active){
+        putPlayerState();
+      }
     } else
       CSPOT_LOG(debug, "Unknown connect_state, uri : %s",
                 res.mercuryHeader.uri);
@@ -208,6 +231,9 @@ DeviceStateHandler::DeviceStateHandler(std::shared_ptr<cspot::Context> ctx) {
         this->putDeviceState(PutStateReason::PutStateReason_BECAME_INACTIVE);
         CSPOT_LOG(debug, "Device changed");
         sendCommand(CommandType::DISC);
+#ifndef CONFIG_CSPOT_STAY_CONNECTED_ON_TRANSFER
+        this->disconnect();
+#endif
       }
     }
   };
@@ -312,7 +338,7 @@ DeviceStateHandler::DeviceStateHandler(std::shared_ptr<cspot::Context> ctx) {
 
 DeviceStateHandler::~DeviceStateHandler() {
   TrackReference::clearProvidedTracklist(&currentTracks);
-  currentTracks.clear();
+  device.player_state.track = ProvidedTrack_init_zero;
   pb_release(Device_fields, &device);
 }
 
@@ -431,7 +457,7 @@ void DeviceStateHandler::putPlayerState(PutStateReason put_state_reason) {
       device.player_state.restrictions.disallow_pausing_reasons[0] =
           strdup("not_playing");
     }
-
+    // Update player state with current track information
     device.player_state.restrictions.disallow_toggling_repeat_context_reasons =
         (char**)calloc(3, sizeof(char*));
     device.player_state.restrictions
@@ -470,6 +496,10 @@ void DeviceStateHandler::putPlayerState(PutStateReason put_state_reason) {
 
     device.player_state.has_index = false;
     device.player_state.has_restrictions = true;
+    if (device.player_state.play_origin.feature_classes != NULL) {
+      free(device.player_state.play_origin.feature_classes);
+      device.player_state.play_origin.feature_classes = NULL;
+    }
   } else {
     device.player_state.index =
         ContextIndex{true, device.player_state.track.page, true,
@@ -513,14 +543,27 @@ void DeviceStateHandler::putPlayerState(PutStateReason put_state_reason) {
 }
 
 void DeviceStateHandler::disconnect() {
+  if (this->is_active) {
+    this->ctx->playbackMetrics->end_reason = PlaybackMetrics::REMOTE;
+    this->ctx->playbackMetrics->end_source = "unknown";
+    this->trackPlayer->stop();
+    this->is_active = false;
+    if (device.player_state.has_restrictions)
+      pb_release(Restrictions_fields, &device.player_state.restrictions);
+    device.player_state.restrictions = Restrictions_init_zero;
+    device.player_state.has_restrictions = false;
+    this->putDeviceState(PutStateReason::PutStateReason_BECAME_INACTIVE);
+    CSPOT_LOG(debug, "Device changed");
+    sendCommand(CommandType::DISC);
+  }
+  this->trackQueue->preloadedTracks.clear();
   this->trackQueue->stopTask();
-  this->trackPlayer->stop();
   this->ctx->session->disconnect();
+  this->onClose();
 }
 
 void DeviceStateHandler::skip(CommandType dir, bool notify) {
   if (dir == CommandType::SKIP_NEXT) {
-    std::scoped_lock lock(trackQueue->tracksMutex);
     this->device.player_state.track = currentTracks[offset];
     if (this->device.player_state.track.full_metadata_count >
         this->device.player_state.track.metadata_count)
@@ -544,7 +587,6 @@ void DeviceStateHandler::skip(CommandType dir, bool notify) {
   } else if (trackQueue->preloadedTracks[0]->trackMetrics->getPosition() >=
                  3000 &&
              offset > 1) {
-    std::scoped_lock lock(trackQueue->tracksMutex);
     trackQueue->preloadedTracks.pop_back();
     offset--;
     trackQueue->preloadedTracks.push_front(std::make_shared<cspot::QueuedTrack>(
@@ -567,7 +609,13 @@ void DeviceStateHandler::skip(CommandType dir, bool notify) {
 void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
   if (data.size() <= 2)
     return;
-  auto jsonResult = nlohmann::json::parse(data);
+  nlohmann::json jsonResult;
+  try {
+    jsonResult = nlohmann::json::parse(data);
+  } catch (const nlohmann::json::parse_error&) {
+    CSPOT_LOG(error, "Failed to parse command");
+    return;  // Parsing failed
+  }
   last_message_id = jsonResult.value("message_id", last_message_id);
 
   auto command = jsonResult.find("command");
@@ -578,8 +626,6 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
               command->at("endpoint").get<std::string>().c_str());
 
     auto options = command->find("options");
-
-    // std::cout<<jsonResult.dump(2)<<std::endl;
     if (command->at("endpoint") == "transfer") {
       if (is_active)
         return;
@@ -592,6 +638,8 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
           }
         }
       }
+      if (this->playerContext->next_page_url != NULL)
+        unreference(&(this->playerContext->next_page_url));
       this->playerContext->radio_offset = 0;
       this->device.player_state.has_is_playing = true;
       this->device.player_state.is_playing = true;
@@ -621,14 +669,13 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
       auto responseHandler = [this](MercurySession::Response res) {
         if (res.fail || !res.parts.size())
           return;
-        std::scoped_lock lock(trackQueue->tracksMutex);
         cspot::TrackReference::clearProvidedTracklist(&currentTracks);
         currentTracks = {};
         Cluster cluster = {};
         for (int i = this->device.player_state.context_metadata_count - 1;
              i >= 0; i--) {
-          unreference(this->device.player_state.context_metadata[i].key);
-          unreference(this->device.player_state.context_metadata[i].value);
+          unreference(&(this->device.player_state.context_metadata[i].key));
+          unreference(&(this->device.player_state.context_metadata[i].value));
         }
         free(this->device.player_state.context_metadata);
         this->device.player_state.context_metadata = NULL;
@@ -657,11 +704,11 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
         for (int i = 0; i < 16; i++) {
           random_bytes.push_back(d(ctx->rng));
         }
-        unreference(this->device.player_state.session_id);
+        unreference(&(this->device.player_state.session_id));
         this->device.player_state.session_id =
             strdup(bytesToHexString(random_bytes).c_str());
 
-        unreference(this->device.player_state.playback_id);
+        unreference(&(this->device.player_state.playback_id));
         random_bytes.clear();
         for (int i = 0; i < 16; i++) {
           random_bytes.push_back(d(ctx->rng));
@@ -671,7 +718,7 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
 
         this->currentTracks.insert(this->currentTracks.begin(),
                                    this->device.player_state.track);
-        offset = 1;
+        offset = 0;
 
         queuePacket = {&offset, &currentTracks};
         this->putDeviceState(
@@ -690,8 +737,9 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
         handler->trackPlayer->stop();
         sendCommand(CommandType::DEPLETED);
 #endif
-        playerContext->radio_offset = 0;
-        std::scoped_lock lock(trackQueue->tracksMutex);
+        if (this->playerContext->next_page_url != NULL)
+          unreference(&(this->playerContext->next_page_url));
+        this->playerContext->radio_offset = 0;
         trackQueue->preloadedTracks.clear();
         uint8_t queued = 0;
         ProvidedTrack track = ProvidedTrack_init_zero;
@@ -700,7 +748,7 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
           this->device.player_state.has_track = true;
         }
         for (int i = 0; i < currentTracks.size(); i++) {
-          if (i > this->offset ||
+          if (i > this->offset || currentTracks[i].provider == NULL ||
               strcmp(currentTracks[i].provider, "queue") != 0) {
             cspot::TrackReference::pbReleaseProvidedTrack(&currentTracks[i]);
             currentTracks.erase(currentTracks.begin() + i);
@@ -742,7 +790,10 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
         auto options = command->find("options");
         int64_t playlist_offset = 0;
         if (options != command->end()) {
-          if (options->find("player_options_override") != options->end())
+          if (options->find("player_options_override") != options->end() &&
+              options->at("player_options_override")
+                      .find("shuffling_context") !=
+                  options->at("player_options_override").end())
             device.player_state.options.shuffling_context =
                 options->at("player_options_override").at("shuffling_context");
           else
@@ -774,8 +825,8 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
                          .context_enhancement_count) {
             for (auto& enhamcement :
                  this->device.player_state.options.context_enhancement) {
-              this->unreference(enhamcement.key);
-              this->unreference(enhamcement.value);
+              this->unreference(&(enhamcement.key));
+              this->unreference(&(enhamcement.value));
             }
             this->device.player_state.options.context_enhancement_count = 0;
           }
@@ -790,8 +841,8 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
           }
           for (int i = this->device.player_state.context_metadata_count - 1;
                i >= 0; i--) {
-            unreference(this->device.player_state.context_metadata[i].key);
-            unreference(this->device.player_state.context_metadata[i].value);
+            unreference(&(this->device.player_state.context_metadata[i].key));
+            unreference(&(this->device.player_state.context_metadata[i].value));
           }
           free(this->device.player_state.context_metadata);
           this->device.player_state.context_metadata =
@@ -810,33 +861,32 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
           if (this->device.player_state.options.context_enhancement_count) {
             for (auto& enhamcement :
                  this->device.player_state.options.context_enhancement) {
-              this->unreference(enhamcement.key);
-              this->unreference(enhamcement.value);
+              this->unreference(&(enhamcement.key));
+              this->unreference(&(enhamcement.value));
             }
             this->device.player_state.options.context_enhancement_count = 0;
           }
           context_metadata_map.clear();
           for (int i = this->device.player_state.context_metadata_count - 1;
                i >= 0; i--) {
-            unreference(this->device.player_state.context_metadata[i].key);
-            unreference(this->device.player_state.context_metadata[i].value);
+            unreference(&(this->device.player_state.context_metadata[i].key));
+            unreference(&(this->device.player_state.context_metadata[i].value));
           }
           free(this->device.player_state.context_metadata);
           this->device.player_state.context_metadata = NULL;
           this->device.player_state.context_metadata_count = 0;
         }
 
-        unreference(this->device.player_state.context_uri);
+        unreference(&(this->device.player_state.context_uri));
         this->device.player_state.context_uri =
             PlayerContext::createStringReferenceIfFound(command->at("context"),
                                                         "uri");
-        unreference(this->device.player_state.context_url);
+        unreference(&(this->device.player_state.context_url));
         this->device.player_state.context_url =
             PlayerContext::createStringReferenceIfFound(command->at("context"),
                                                         "url");
-
         reloadPreloadedTracks = true;
-        this->trackPlayer->start();
+        //this->trackPlayer->start();
         uint8_t metadata_offset = 0;
         for (auto metadata_entry : metadata_map) {
           track.metadata[metadata_offset].key =
@@ -877,14 +927,25 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
         }
         track.full_metadata_count = metadata_offset;
         track.metadata_count = metadata_offset;
-        track.provider = strdup("context");
+        if (this->device.player_state.context_url != NULL &&
+            strchr(this->device.player_state.context_url, ':') != NULL) {
+          track.provider =
+              strndup(this->device.player_state.context_url,
+                      strchr(this->device.player_state.context_url, ':') -
+                          this->device.player_state.context_url);
+        } else if (strchr(this->device.player_state.context_uri, ':') !=
+                   strrchr(this->device.player_state.context_uri, ':')) {
+          track.provider = strdup("context");
+        }
         if (track.uri) {
           currentTracks.insert(currentTracks.begin(), track);
           device.player_state.track = track;
-        }
-        offset = 1;
-        playerContext->resolveTracklist(metadata_map, reloadTrackList, true,
-                                        true);
+        } else
+          pb_release(ProvidedTrack_fields, &track);
+        offset = 0;
+        this->playerContext->resolveTracklist(metadata_map, reloadTrackList,
+                                              true, true);
+        CSPOT_LOG(info, "Tracklist reloaded");
       } else if (command->at("endpoint") == "pause") {
         device.player_state.is_paused = true;
         device.player_state.has_is_paused = true;
@@ -938,7 +999,8 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
       } else if (command->at("endpoint") == "seek_to") {
 
 #ifndef CONFIG_BELL_NOCODEC
-        needsToBeSkipped = false;
+        if (!this->trackQueue->preloadedTracks[0]->loading)
+          needsToBeSkipped = false;
 #endif
         if (command->at("relative") == "beginning") {  //relative
           this->device.player_state.has_position_as_of_timestamp = true;
@@ -946,14 +1008,17 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
               command->at("value").get<int64_t>();
           this->device.player_state.timestamp =
               this->ctx->timeProvider->getSyncedTimestamp();
-          this->trackPlayer->seekMs(command->at("value").get<uint32_t>());
+          this->trackPlayer->seekMs(
+              command->at("value").get<uint32_t>(),
+              this->trackQueue->preloadedTracks[0]->loading);
         } else if (command->at("relative") == "current") {
           this->device.player_state.has_position_as_of_timestamp = true;
           this->device.player_state.position_as_of_timestamp =
               command->at("value").get<int64_t>() +
               command->at("position").get<int64_t>();
           this->trackPlayer->seekMs(
-              this->device.player_state.position_as_of_timestamp);
+              this->device.player_state.position_as_of_timestamp,
+              this->trackQueue->preloadedTracks[0]->loading);
           this->device.player_state.timestamp =
               this->ctx->timeProvider->getSyncedTimestamp();
         }
@@ -962,7 +1027,6 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
             (int32_t)this->device.player_state.position_as_of_timestamp);
         this->putPlayerState();
       } else if (command->at("endpoint") == "add_to_queue") {
-        std::scoped_lock lock(trackQueue->tracksMutex);
         uint8_t queuedOffset = 0;
         //look up already queued tracks
         for (uint8_t i = offset; i < currentTracks.size(); i++) {
@@ -987,14 +1051,14 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
         }
 #ifndef CONFIG_BELL_NOCODEC
         this->trackPlayer->seekMs(
-            trackQueue->preloadedTracks[0]->trackMetrics->getPosition());
+            trackQueue->preloadedTracks[0]->trackMetrics->getPosition(),
+            this->trackQueue->preloadedTracks[0]->loading);
         sendCommand(
             CommandType::SEEK,
             (int32_t)this->device.player_state.position_as_of_timestamp);
 #endif
         this->putPlayerState();
       } else if (command->at("endpoint") == "set_queue") {
-        std::scoped_lock lock(trackQueue->tracksMutex);
         uint8_t queuedOffset = 0, newQueuedOffset = 0;
         //look up already queued tracks
         for (uint8_t i = offset; i < currentTracks.size(); i++) {
@@ -1057,14 +1121,15 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
         }
 #ifndef CONFIG_BELL_NOCODEC
         this->trackPlayer->seekMs(
-            trackQueue->preloadedTracks[0]->trackMetrics->getPosition());
+            trackQueue->preloadedTracks[0]->trackMetrics->getPosition(),
+            this->trackQueue->preloadedTracks[0]->loading);
         sendCommand(
             CommandType::SEEK,
             (int32_t)this->device.player_state.position_as_of_timestamp);
 #endif
         this->putPlayerState();
       } else if (command->at("endpoint") == "update_context") {
-        unreference(this->device.player_state.session_id);
+        unreference(&(this->device.player_state.session_id));
         this->device.player_state.session_id =
             PlayerContext::createStringReferenceIfFound(*command, "session_id");
 
@@ -1090,17 +1155,17 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
         }
       } else if (command->at("endpoint") == "set_shuffling_context") {
         if (context_uri.size()) {
-          unreference(this->device.player_state.context_uri);
+          unreference(&(this->device.player_state.context_uri));
           this->device.player_state.context_uri = strdup(context_uri.c_str());
         }
         if (context_url.size()) {
-          unreference(this->device.player_state.context_url);
+          unreference(&(this->device.player_state.context_url));
           this->device.player_state.context_url = strdup(context_url.c_str());
         }
         for (int i = this->device.player_state.context_metadata_count - 1;
              i >= 0; i--) {
-          unreference(this->device.player_state.context_metadata[i].key);
-          unreference(this->device.player_state.context_metadata[i].value);
+          unreference(&(this->device.player_state.context_metadata[i].key));
+          unreference(&(this->device.player_state.context_metadata[i].value));
         }
         free(this->device.player_state.context_metadata);
         this->device.player_state.context_metadata =
@@ -1130,14 +1195,14 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
           this->device.player_state.options.context_enhancement_count = 1;
         } else {
           if (this->device.player_state.options.context_enhancement_count) {
+            unreference(&(
+                this->device.player_state.options.context_enhancement[0].key));
             unreference(
-                this->device.player_state.options.context_enhancement[0].key);
-            unreference(
-                this->device.player_state.options.context_enhancement[0].value);
+                &(this->device.player_state.options.context_enhancement[0]
+                      .value));
             this->device.player_state.options.context_enhancement_count = 0;
           }
         }
-        std::scoped_lock lock(trackQueue->tracksMutex);
         playerStateChanged = true;
         this->trackQueue->preloadedTracks.erase(
             this->trackQueue->preloadedTracks.begin(),
@@ -1159,7 +1224,8 @@ void DeviceStateHandler::parseCommand(std::vector<uint8_t>& data) {
                                         .shuffling_context));
 #ifndef CONFIG_BELL_NOCODEC
         this->trackPlayer->seekMs(
-            trackQueue->preloadedTracks[0]->trackMetrics->getPosition());
+            trackQueue->preloadedTracks[0]->trackMetrics->getPosition(),
+            this->trackQueue->preloadedTracks[0]->loading);
         sendCommand(
             CommandType::SEEK,
             (int32_t)this->device.player_state.position_as_of_timestamp);

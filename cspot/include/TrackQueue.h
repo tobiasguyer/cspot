@@ -58,7 +58,9 @@ class QueuedTrack {
   std::string identifier;
   uint32_t playingTrackIndex;
   uint32_t requestedPosition;
+  AudioFormat audioFormat;
   bool loading = false;
+  uint8_t retries = 0;
 
   // PB data
   Track pbTrack = Track_init_zero;
@@ -83,8 +85,6 @@ class QueuedTrack {
       std::shared_ptr<bell::WrappedSemaphore> updateSemaphore);
 
   void stepLoadCDNUrl(const std::string& accessKey);
-
-  void expire();
 
  private:
   std::shared_ptr<cspot::Context> ctx;
@@ -126,10 +126,10 @@ class TrackQueue : public bell::Task {
   std::shared_ptr<cspot::Context> ctx;
   std::shared_ptr<bell::WrappedSemaphore> processSemaphore;
 
-  bool isRunning = false;
+  std::atomic<bool> isRunning = false;
 
   std::string accessKey;
 
-  void processTrack(std::shared_ptr<QueuedTrack> track);
+  bool processTrack(std::shared_ptr<QueuedTrack> track);
 };
 }  // namespace cspot

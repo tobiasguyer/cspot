@@ -77,7 +77,7 @@ class VS1053_TRACK {
     tsCancel = 5,
     tsCancelAwait = 6,
     tsStopped = 7
-  } state = tsPlaybackStart;
+  } state = tsStopped;
   size_t header_size = 0;
   size_t track_id;
   StaticStreamBuffer_t xStaticStreamBuffer;

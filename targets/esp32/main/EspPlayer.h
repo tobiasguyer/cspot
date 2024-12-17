@@ -20,14 +20,14 @@ class DeviceStateHandler;
 
 class EspPlayer : public bell::Task {
  public:
-  EspPlayer(std::unique_ptr<AudioSink> sink,
+  EspPlayer(std::shared_ptr<AudioSink> sink,
             std::shared_ptr<cspot::DeviceStateHandler> handler);
   void disconnect();
 
  private:
   std::string currentTrackId;
   std::shared_ptr<cspot::DeviceStateHandler> handler;
-  std::unique_ptr<AudioSink> audioSink;
+  std::shared_ptr<AudioSink> audioSink;
   std::shared_ptr<bell::CircularBuffer> circularBuffer;
   std::deque<std::shared_ptr<cspot::QueuedTrack>> tracks = {};
   void feedData(uint8_t* data, size_t len, size_t);

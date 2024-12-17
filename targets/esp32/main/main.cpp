@@ -44,8 +44,8 @@ static EventGroupHandle_t s_wifi_event_group;
 #define WIFI_CONNECTED_BIT BIT0
 #define WIFI_FAIL_BIT BIT1
 
-#define EXAMPLE_ESP_WIFI_SSID CONFIG_EXAMPLE_WIFI_SSID
-#define EXAMPLE_ESP_WIFI_PASS CONFIG_EXAMPLE_WIFI_PASSWORD
+//#define EXAMPLE_ESP_WIFI_SSID CONFIG_EXAMPLE_WIFI_SSID
+//#define EXAMPLE_ESP_WIFI_PASS CONFIG_EXAMPLE_WIFI_PASSWORD
 #define WIFI_AP_MAXIMUM_RETRY 5
 
 #define DEVICE_NAME CONFIG_CSPOT_DEVICE_NAME
@@ -92,10 +92,17 @@ class ZeroconfAuthenticator {
 
   // Use bell's HTTP server to handle the authentication, although anything can be used
   std::unique_ptr<bell::BellHTTPServer> server;
+  std::unique_ptr<bell::MDNSService> mdnsService;
   std::shared_ptr<cspot::LoginBlob> blob;
 
   std::function<void()> onAuthSuccess;
   std::function<void()> onClose;
+
+  void registerMdnsService() {
+    this->mdnsService = bell::MDNSService::registerService(
+        blob->getDeviceName(), "_spotify-connect", "_tcp", "", serverPort,
+        {{"VERSION", "1.0"}, {"CPath", "/spotify_info"}, {"Stack", "SP"}});
+  }
 
   void registerHandlers() {
     this->server = std::make_unique<bell::BellHTTPServer>(serverPort);
@@ -105,6 +112,7 @@ class ZeroconfAuthenticator {
     });
 
     server->registerGet("/close", [this](struct mg_connection* conn) {
+      CSPOT_LOG(info, "Closing connection");
       this->onClose();
       return this->server->makeEmptyResponse();
     });
@@ -130,23 +138,30 @@ class ZeroconfAuthenticator {
         for (int i = 0; i < num; i++) {
           queryMap[hd[i].name] = hd[i].value;
         }
+        if (1) {  //queryMap["userName"] != blob->getUserName()) {
 
-        CSPOT_LOG(info, "Received zeroauth POST data");
+          CSPOT_LOG(info, "Received zeroauth POST data");
 
-        // Pass user's credentials to the blob
-        blob->loadZeroconfQuery(queryMap);
+          // Pass user's credentials to the blob
+          blob->loadZeroconfQuery(queryMap);
 
-        // We have the blob, proceed to login
-        onAuthSuccess();
+          // We have the blob, proceed to login
+#ifndef CONFIG_CSPOT_DISCOVERY_MODE_OPEN
+          mdnsService->unregisterService();
+#else 
+          onClose();
+#endif
+          onAuthSuccess();
+        } else {
+          CSPOT_LOG(debug, "User already logged in, skipping auth");
+        }
       }
 
       return server->makeJsonResponse(obj.dump());
     });
 
     // Register mdns service, for spotify to find us
-    bell::MDNSService::registerService(
-        blob->getDeviceName(), "_spotify-connect", "_tcp", "", serverPort,
-        {{"VERSION", "1.0"}, {"CPath", "/spotify_info"}, {"Stack", "SP"}});
+    this->registerMdnsService();
     std::cout << "Waiting for spotify app to connect..." << std::endl;
   }
 };
@@ -155,11 +170,12 @@ class CSpotTask : public bell::Task {
  private:
   //std::unique_ptr<cspot::DeviceStateHandler> handler;
 #ifndef CONFIG_BELL_NOCODEC
-  std::unique_ptr<AudioSink> audioSink;
+  std::shared_ptr<AudioSink> audioSink;
 #endif
+  std::unique_ptr<ZeroconfAuthenticator> zeroconfServer;
 
  public:
-  CSpotTask() : bell::Task("cspot", 32 * 1024, 0, 0) {
+  CSpotTask() : bell::Task("cspot", 16 * 1024, 0, 0) {
     startTask();
   }
   void runTask() {
@@ -172,22 +188,22 @@ class CSpotTask : public bell::Task {
     initAudioSink(audioSink);
 #else
 #ifdef CONFIG_CSPOT_SINK_INTERNAL
-    auto audioSink = std::make_unique<InternalAudioSink>();
+    auto audioSink = std::make_shared<InternalAudioSink>();
 #endif
 #ifdef CONFIG_CSPOT_SINK_AC101
-    auto audioSink = std::make_unique<AC101AudioSink>();
+    auto audioSink = std::make_shared<AC101AudioSink>();
 #endif
 #ifdef CONFIG_CSPOT_SINK_ES8388
-    auto audioSink = std::make_unique<ES8388AudioSink>();
+    auto audioSink = std::make_shared<ES8388AudioSink>();
 #endif
 #ifdef CONFIG_CSPOT_SINK_ES9018
-    auto audioSink = std::make_unique<ES9018AudioSink>();
+    auto audioSink = std::make_shared<ES9018AudioSink>();
 #endif
 #ifdef CONFIG_CSPOT_SINK_PCM5102
-    auto audioSink = std::make_unique<PCM5102AudioSink>();
+    auto audioSink = std::make_shared<PCM5102AudioSink>();
 #endif
 #ifdef CONFIG_CSPOT_SINK_TAS5711
-    auto audioSink = std::make_unique<TAS5711>();
+    auto audioSink = std::make_shared<TAS5711>();
 #endif
     audioSink->setParams(44100, 2, 16);
     audioSink->volumeChanged(160);
@@ -195,14 +211,22 @@ class CSpotTask : public bell::Task {
 
     auto loggedInSemaphore = std::make_shared<bell::WrappedSemaphore>();
 
-    auto zeroconfServer = std::make_unique<ZeroconfAuthenticator>();
+    std::atomic<bool> isRunningInDiscoveryMode = true;
     std::atomic<bool> isRunning = true;
-
-    zeroconfServer->onClose = [&isRunning]() {
-      isRunning = false;
-    };
+    this->zeroconfServer = std::make_unique<ZeroconfAuthenticator>();
 
     auto loginBlob = std::make_shared<cspot::LoginBlob>(DEVICE_NAME);
+
+    this->zeroconfServer->onClose = [this, &isRunning, &loginBlob]() {
+      isRunning = false;
+#ifndef CONFIG_CSPOT_DISCOVERY_MODE_OPEN
+      CSPOT_LOG(info, "Waiting for spotify app to connect...");
+      loginBlob = std::make_shared<cspot::LoginBlob>(DEVICE_NAME);
+      this->zeroconfServer->blob = loginBlob;
+      this->zeroconfServer->registerMdnsService();
+#endif
+    };
+
 #ifdef CONFIG_CSPOT_LOGIN_PASS
     loginBlob->loadUserPass(CONFIG_CSPOT_LOGIN_USERNAME,
                             CONFIG_CSPOT_LOGIN_PASSWORD);
@@ -210,48 +234,53 @@ class CSpotTask : public bell::Task {
 
 #else
     zeroconfServer->blob = loginBlob;
-    zeroconfServer->onAuthSuccess = [loggedInSemaphore]() {
-      loggedInSemaphore->give();
+    zeroconfServer->onAuthSuccess = [loggedInSemaphore, &isRunning]() {
+      if (!isRunning)
+        loggedInSemaphore->give();
     };
     zeroconfServer->registerHandlers();
 #endif
-    loggedInSemaphore->wait();
-    auto ctx = cspot::Context::createFromBlob(loginBlob);
-  CSPOTConnecting:;
-    try {
-      ctx->session->connectWithRandomAp();
-      ctx->config.authData = ctx->session->authenticate(loginBlob);
-      if (ctx->config.authData.size() > 0) {
-        // when credentials file is set, then store reusable credentials
+    while (true) {
+      loggedInSemaphore->wait();
+      isRunning = true;
+      auto ctx = cspot::Context::createFromBlob(loginBlob);
+    CSPOTConnecting:;
+      try {
+        ctx->session->connectWithRandomAp();
+        ctx->config.authData = ctx->session->authenticate(loginBlob);
+        if (ctx->config.authData.size() > 0) {
+          // when credentials file is set, then store reusable credentials
 
-        // Start device handler task
-        auto handler = std::make_shared<cspot::DeviceStateHandler>(ctx);
+          // Start device handler task
+          auto handler = std::make_shared<cspot::DeviceStateHandler>(
+              ctx, zeroconfServer->onClose);
 
-        // Start handling mercury messages
-        ctx->session->startTask();
+          // Start handling mercury messages
+          ctx->session->startTask();
 
-        // Create a player, pass the handler
+          // Create a player, pass the handler
 #ifndef CONFIG_BELL_NOCODEC
-        auto player = std::make_shared<EspPlayer>(std::move(audioSink),
-                                                  std::move(handler));
+          auto player = std::make_shared<EspPlayer>(audioSink, handler);
 #else
-        auto player = std::make_shared<VSPlayer>(std::move(handler),
-                                                 std::move(audioSink));
+          auto player = std::make_shared<VSPlayer>(handler, audioSink);
 #endif
-        // If we wanted to handle multiple devices, we would halt this loop
-        // when a new zeroconf login is requested, and reinitialize the session
-        uint8_t taskCount = 0;
-        while (isRunning) {
-          ctx->session->handlePacket();
-        }
+          // If we wanted to handle multiple devices, we would halt this loop
+          // when a new zeroconf login is requested, and reinitialize the session
+          uint8_t taskCount = 0;
+          while (isRunning) {
+            ctx->session->handlePacket();
+          }
 
-        // Never happens, but required for above case
-        handler->disconnect();
-        player->disconnect();
+          // Never happens, but required for above case
+          handler->disconnect();
+          player->disconnect();
+        } else {
+          std::cout << "Failed to authenticate" << std::endl;
+        }
+      } catch (std::exception& e) {
+        std::cout << "Error while connecting " << e.what() << std::endl;
+        goto CSPOTConnecting;
       }
-    } catch (std::exception& e) {
-      std::cout << "Error while connecting " << e.what() << std::endl;
-      goto CSPOTConnecting;
     }
   }
 };
@@ -320,13 +349,11 @@ void wifi_init_sta(void) {
       WIFI_EVENT, ESP_EVENT_ANY_ID, &event_handler, NULL, &instance_any_id));
   ESP_ERROR_CHECK(esp_event_handler_instance_register(
       IP_EVENT, IP_EVENT_STA_GOT_IP, &event_handler, NULL, &instance_got_ip));
-  wifi_config_t wifi_config = {
-      .sta =
-          {
-              .ssid = EXAMPLE_ESP_WIFI_SSID,
-              .password = EXAMPLE_ESP_WIFI_PASS,
-          },
-  };
+  wifi_config_t wifi_config = {};
+  strcpy(reinterpret_cast<char*>(wifi_config.sta.ssid),
+         CONFIG_EXAMPLE_WIFI_SSID);
+  strcpy(reinterpret_cast<char*>(wifi_config.sta.password),
+         CONFIG_EXAMPLE_WIFI_PASSWORD);
   ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
   ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
   ESP_ERROR_CHECK(esp_wifi_start());
@@ -342,11 +369,11 @@ void wifi_init_sta(void) {
   /* xEventGroupWaitBits() returns the bits before the call returned, hence we can test which event actually
      * happened. */
   if (bits & WIFI_CONNECTED_BIT) {
-    ESP_LOGI(TAG, "connected to ap SSID:%s password:%s", EXAMPLE_ESP_WIFI_SSID,
-             EXAMPLE_ESP_WIFI_PASS);
+    ESP_LOGI(TAG, "connected to ap SSID:%s password:%s",
+             CONFIG_EXAMPLE_WIFI_SSID, CONFIG_EXAMPLE_WIFI_SSID);
   } else if (bits & WIFI_FAIL_BIT) {
     ESP_LOGI(TAG, "Failed to connect to SSID:%s, password:%s",
-             EXAMPLE_ESP_WIFI_SSID, EXAMPLE_ESP_WIFI_PASS);
+             CONFIG_EXAMPLE_WIFI_SSID, CONFIG_EXAMPLE_WIFI_SSID);
   } else {
     ESP_LOGE(TAG, "UNEXPECTED EVENT");
   }

@@ -55,8 +55,9 @@ class DeviceStateHandler {
   };
 
   typedef std::function<void(Command)> StateCallback;
+  std::function<void()> onClose;
 
-  DeviceStateHandler(std::shared_ptr<cspot::Context>);
+  DeviceStateHandler(std::shared_ptr<cspot::Context>, std::function<void()>);
   ~DeviceStateHandler();
 
   void disconnect();
@@ -101,10 +102,11 @@ class DeviceStateHandler {
   void parseCommand(std::vector<uint8_t>& data);
   void skip(CommandType dir, bool notify);
 
-  void unreference(char* string) {
-    if (string != NULL)
-      free(string);
-    string = NULL;
+  void unreference(char** string) {
+    if (*string != NULL) {
+      free(*string);
+      *string = NULL;
+    }
   }
 
   static void reloadTrackList(void*);

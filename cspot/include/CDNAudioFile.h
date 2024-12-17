@@ -26,6 +26,16 @@ class CDNAudioFile {
   * @brief Opens connection to the provided cdn url, and fetches track metadata.
   */
   void openStream();
+
+  /**
+  * @brief Read and decrypt part of the cdn stream
+  *
+  * @param dst buffer where to read received data to
+  * @param amount of bytes to read
+  *
+  * @returns amount of bytes read
+  */
+  size_t readBytes(uint8_t* dst, size_t bytes);
 #else
   /**
   * @brief Opens connection to the provided cdn url, and fetches track header.
@@ -34,8 +44,8 @@ class CDNAudioFile {
   * 
   * @returns char* where to read data from
   */
-  uint8_t* openStream(size_t&);
-#endif
+  uint8_t* openStream(ssize_t&);
+
   /**
   * @brief Read and decrypt part of the cdn stream
   *
@@ -46,6 +56,7 @@ class CDNAudioFile {
   */
   long readBytes(uint8_t* dst, size_t bytes);
 
+#endif
   /**
   * @brief Returns current position in CDN stream
   */

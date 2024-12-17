@@ -129,23 +129,22 @@ QueuedTrack::QueuedTrack(
     int64_t requestedPosition)
     : requestedPosition((uint32_t)requestedPosition), ctx(ctx) {
   trackMetrics = std::make_shared<TrackMetrics>(ctx, requestedPosition);
-  loadedSemaphore = std::make_shared<bell::WrappedSemaphore>();
   this->playableSemaphore = playableSemaphore;
   this->ref = ref;
+  this->audioFormat = ctx->config.audioFormat;
   if (!strstr(ref.uri, "spotify:delimiter")) {
     this->gid = base62Decode(ref.uri);
     state = State::QUEUED;
   } else {
     state = State::FAILED;
     playableSemaphore->give();
-    loadedSemaphore->give();
   }
 }
 
 QueuedTrack::~QueuedTrack() {
+  //if (state < State::READY)
+  //  playableSemaphore->give();
   state = State::FAILED;
-  loadedSemaphore->give();
-  //playableSemaphore->give();
 
   if (pendingMercuryRequest != 0) {
     ctx->session->unregister(pendingMercuryRequest);
@@ -177,9 +176,6 @@ void QueuedTrack::stepParseMetadata(Track* pbTrack, Episode* pbEpisode) {
     CSPOT_LOG(info, "Track name: %s", pbTrack->name);
     CSPOT_LOG(info, "Track duration: %d", pbTrack->duration);
 
-    CSPOT_LOG(debug, "trackInfo.restriction.size() = %d",
-              pbTrack->restriction_count);
-
     // Check if we can play the track, if not, try alternatives
     if (TrackDataUtils::doRestrictionsApply(
             pbTrack->restriction, pbTrack->restriction_count, countryCode)) {
@@ -210,9 +206,6 @@ void QueuedTrack::stepParseMetadata(Track* pbTrack, Episode* pbEpisode) {
     CSPOT_LOG(info, "Episode name: %s", pbEpisode->name);
     CSPOT_LOG(info, "Episode duration: %d", pbEpisode->duration);
 
-    CSPOT_LOG(debug, "episodeInfo.restriction.size() = %d",
-              pbEpisode->restriction_count);
-
     // Check if we can play the episode
     if (!TrackDataUtils::doRestrictionsApply(pbEpisode->restriction,
                                              pbEpisode->restriction_count,
@@ -229,7 +222,7 @@ void QueuedTrack::stepParseMetadata(Track* pbTrack, Episode* pbEpisode) {
   // Find playable file
   for (int x = 0; x < filesCount; x++) {
     CSPOT_LOG(debug, "File format: %d", selectedFiles[x].format);
-    if (selectedFiles[x].format == ctx->config.audioFormat) {
+    if (selectedFiles[x].format == audioFormat) {
       fileId = pbArrayToVector(selectedFiles[x].file_id);
       break;  // If file found stop searching
     }
@@ -238,6 +231,7 @@ void QueuedTrack::stepParseMetadata(Track* pbTrack, Episode* pbEpisode) {
     if (fileId.size() == 0 &&
         selectedFiles[x].format == AudioFormat_OGG_VORBIS_96) {
       fileId = pbArrayToVector(selectedFiles[x].file_id);
+      CSPOT_LOG(info, "Falling back to OGG Vorbis 96kbps");
     }
   }
 
@@ -247,7 +241,6 @@ void QueuedTrack::stepParseMetadata(Track* pbTrack, Episode* pbEpisode) {
 
     // no alternatives for song
     state = State::FAILED;
-    loadedSemaphore->give();
     playableSemaphore->give();
     return;
   }
@@ -271,12 +264,21 @@ void QueuedTrack::stepLoadAudioFile(
               std::vector<uint8_t>(audioKey.begin() + 4, audioKey.end());
 
           state = State::CDN_REQUIRED;
+          updateSemaphore->give();
         } else {
           CSPOT_LOG(error, "Failed to get audio key");
-          state = State::FAILED;
-          playableSemaphore->give();
+          retries++;
+          state = State::KEY_REQUIRED;
+          if (retries > 10) {
+            if (audioFormat > AudioFormat_OGG_VORBIS_96) {
+              audioFormat = (AudioFormat)(audioFormat - 1);
+              state = State::QUEUED;
+            } else {
+              state = State::FAILED;
+              playableSemaphore->give();
+            }
+          }
         }
-        updateSemaphore->give();
       });
 
   state = State::PENDING_KEY;
@@ -316,21 +318,11 @@ void QueuedTrack::stepLoadCDNUrl(const std::string& accessKey) {
 
     // CSPOT_LOG(info, "Received CDN URL, %s", cdnUrl.c_str());
     state = State::READY;
-    loadedSemaphore->give();
   } catch (...) {
     CSPOT_LOG(error, "Cannot fetch CDN URL");
     state = State::FAILED;
-    loadedSemaphore->give();
   }
   playableSemaphore->give();
-}
-
-void QueuedTrack::expire() {
-  if (state != State::QUEUED && state != State::FAILED) {
-    state = State::FAILED;
-    loadedSemaphore->give();
-    playableSemaphore->give();
-  }
 }
 
 void QueuedTrack::stepLoadMetadata(
@@ -351,7 +343,6 @@ void QueuedTrack::stepLoadMetadata(
       // Invalid metadata, cannot proceed
       state = State::FAILED;
       updateSemaphore->give();
-      loadedSemaphore->give();
       playableSemaphore->give();
       return;
     }
@@ -380,7 +371,7 @@ void QueuedTrack::stepLoadMetadata(
 }
 
 TrackQueue::TrackQueue(std::shared_ptr<cspot::Context> ctx)
-    : bell::Task("CSpotTrackQueue", 1024 * 32, 2, 1), ctx(ctx) {
+    : bell::Task("CSpotTrackQueue", 1024 * 48, 2, 1), ctx(ctx) {
   accessKeyFetcher = std::make_shared<cspot::AccessKeyFetcher>(ctx);
   processSemaphore = std::make_shared<bell::WrappedSemaphore>();
   playableSemaphore = std::make_shared<bell::WrappedSemaphore>();
@@ -417,11 +408,8 @@ void TrackQueue::runTask() {
     }
 
     for (auto& track : trackQueue) {
-      std::scoped_lock lock(tracksMutex);
       if (track) {
-        this->processTrack(track);
-        if (track->state != QueuedTrack::State::FAILED &&
-            track->state != QueuedTrack::State::READY)
+        if (this->processTrack(track))
           break;
       }
     }
@@ -461,7 +449,7 @@ std::shared_ptr<QueuedTrack> TrackQueue::consumeTrack(
   return preloadedTracks[offset];
 }
 
-void TrackQueue::processTrack(std::shared_ptr<QueuedTrack> track) {
+bool TrackQueue::processTrack(std::shared_ptr<QueuedTrack> track) {
   switch (track->state) {
     case QueuedTrack::State::QUEUED:
       track->stepLoadMetadata(&track->pbTrack, &track->pbEpisode, tracksMutex,
@@ -473,7 +461,9 @@ void TrackQueue::processTrack(std::shared_ptr<QueuedTrack> track) {
     case QueuedTrack::State::CDN_REQUIRED:
       track->stepLoadCDNUrl(accessKey);
     default:
+      return false;
       // Do not perform any action
       break;
   }
+  return true;
 }

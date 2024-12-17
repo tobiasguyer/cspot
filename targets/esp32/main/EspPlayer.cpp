@@ -18,9 +18,9 @@
 #include "StreamInfo.h"   // for BitWidth, BitWidth::BW_16
 #include "TrackPlayer.h"  // for TrackPlayer
 
-EspPlayer::EspPlayer(std::unique_ptr<AudioSink> sink,
+EspPlayer::EspPlayer(std::shared_ptr<AudioSink> sink,
                      std::shared_ptr<cspot::DeviceStateHandler> handler)
-    : bell::Task("player", 32 * 1024, 0, 1) {
+    : bell::Task("player", 12 * 1024, 0, 1) {
   this->handler = handler;
   this->audioSink = std::move(sink);
 
@@ -93,23 +93,16 @@ EspPlayer::EspPlayer(std::unique_ptr<AudioSink> sink,
 void EspPlayer::feedData(uint8_t* data, size_t len, size_t trackId) {
   size_t toWrite = len;
 
-  if (!len) {
-    tracks.at(0)->trackMetrics->endTrack();
-    this->handler->ctx->playbackMetrics->sendEvent(tracks[0]);
-    if (this->playlistEnd) {
-      tracks.clear();
+  while (toWrite > 0) {
+    this->current_hash = trackId;
+    size_t written =
+        this->circularBuffer->write(data + (len - toWrite), toWrite);
+    if (written == 0) {
+      BELL_SLEEP_MS(10);
     }
-  } else
-    while (toWrite > 0) {
-      this->current_hash = trackId;
-      size_t written =
-          this->circularBuffer->write(data + (len - toWrite), toWrite);
-      if (written == 0) {
-        BELL_SLEEP_MS(10);
-      }
 
-      toWrite -= written;
-    }
+    toWrite -= written;
+  }
 }
 
 void EspPlayer::runTask() {
@@ -130,15 +123,6 @@ void EspPlayer::runTask() {
       this->audioSink->feedPCMFrames(outBuf.data(), read);
 
       if (read == 0) {
-        if (this->playlistEnd) {
-          this->playlistEnd = false;
-          if (tracks.size()) {
-            tracks.at(0)->trackMetrics->endTrack();
-            this->handler->ctx->playbackMetrics->sendEvent(tracks[0]);
-            tracks.clear();
-          }
-          lastHash = 0;
-        }
         BELL_SLEEP_MS(10);
         continue;
       } else {
@@ -146,7 +130,13 @@ void EspPlayer::runTask() {
           if (lastHash) {
             tracks.at(0)->trackMetrics->endTrack();
             this->handler->ctx->playbackMetrics->sendEvent(tracks[0]);
-            tracks.pop_front();
+            CSPOT_LOG(info, "TRACK ENDED, new track %i", current_hash);
+            if (tracks.size()) {
+              tracks.pop_front();
+              if (this->playlistEnd) {
+                tracks.clear();
+              }
+            }
             this->handler->trackPlayer->onTrackEnd(true);
           }
           lastHash = current_hash;
